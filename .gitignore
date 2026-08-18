@@ -1,3 +1,4 @@
+# ---- Yarn (Berry / PnP) ----
 .yarn/*
 !.yarn/patches
 !.yarn/plugins
@@ -15,3 +16,46 @@ node_modules
 
 #!.yarn/cache
 .pnp.*
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Logs ----
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Test / coverage output ----
+coverage/
+.nyc_output/
+*.lcov
+
+# ---- Build & caches ----
+dist/
+build/
+*.tsbuildinfo
+.eslintcache
+.cache/
+tmp/
+
+# ---- Local data volumes ----
+redis/data/
+pgdata/
+
+# ---- Editors ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Claude Code ----
+.claude/settings.local.json

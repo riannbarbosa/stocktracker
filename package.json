@@ -1,4 +1,29 @@
 {
   "name": "stocktracker-api",
-  "packageManager": "yarn@4.9.2"
+  "version": "1.0.0",
+  "type": "module",
+  "description": "REST API serving B3 stock quotes with Redis caching, built to run on containers.",
+  "packageManager": "yarn@4.9.2",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.ts",
+    "dev": "node --env-file-if-exists=.env --watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
+    "jiti": "^2.7.0",
+    "typescript": "5",
+    "typescript-eslint": "^8.65.0"
+  },
+  "dependencies": {
+    "fastify": "^5.10.0"
+  }
 }

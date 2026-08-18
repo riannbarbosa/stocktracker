@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    /* Language & runtime — Node 22 runs the .ts files directly via native
+       type stripping, so tsc is used for type-checking only (see noEmit). */
+    "target": "esnext",
+    "lib": ["esnext"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+
+    /* Native type stripping: TS syntax must be fully erasable and imports
+       kept verbatim so Node can strip types without a compile step. */
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+
+    /* Type-check only — Node executes the source, tsc never emits. */
+    "noEmit": true,
+
+    /* Strictness */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "lib/**/*.ts", "tests/**/*.ts", "redis/redis.ts"]
+}
