@@ -8,13 +8,13 @@ const paramsSchema = {
     symbols: {
       type: "string",
       description: "Comma-separated list of stock symbols to fetch quotes for",
-      pattern: '^[A-Za-z]{4}[0-9]{1,2}$'
+      pattern: '^[A-Za-z]{4}[0-9]{1,2}(,[A-Za-z]{4}[0-9]{1,2})*$'
     },
   },
   
 }
 
-export async function quoteRotes(app: any) {
+export async function quoteRoutes(app: any) {
   app.get('/quotes/:symbols', { schema: { params: paramsSchema, }}, async (request: any, reply: any) => {
     const { symbols } = request.params;
     try {

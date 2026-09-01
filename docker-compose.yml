@@ -1,4 +1,24 @@
 services:
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
   postgres:
     image: postgres:16-alpine
     environment:
@@ -17,13 +37,14 @@ services:
   api:
     build: .
     ports:
-      - "3000:3000"
+      - "${API_PORT:-3000}:3000"
     env_file:
       - .env
     environment:
-      PORT: 3000
+      PORT: "3000"
       BRAPI_BASE_URL: https://brapi.dev/api
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/stocktracker
+      
     depends_on:
       postgres:
         condition: service_healthy

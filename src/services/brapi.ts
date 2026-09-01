@@ -1,6 +1,6 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { config } from '../config.ts';
 import type { BrapiQuote, BrapiQuoteResponse, StockQuote } from '../types/brapi.ts';
-
 export class BrapiError extends Error {
   status: number;
 
@@ -31,39 +31,61 @@ function normalizeSymbol(raw: BrapiQuote): StockQuote {
   }
 }
 
+function isRetryable(error: unknown): boolean {
+  if (error instanceof BrapiError) {
+    return error.status >= 500 || error.status === 429;
+  }
+  return false;
+}
   
 async function requestStockQuote(symbol: string): Promise<BrapiQuote> {
-  const url = `${config.brapi.baseUrl}/quote/${symbol}`;
-  const headers: Record<string, string> = {
-    accept: 'application/json',
-  };
-  if(config.brapi.token) {
+  const url = `${config.brapi.baseUrl}/quote/${encodeURIComponent(symbol)}`;
+  const headers: Record<string, string> = { accept: 'application/json' };
+
+  if (config.brapi.token) {
     headers['Authorization'] = `Bearer ${config.brapi.token}`;
   }
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(config.brapi.timeoutMs) });
+
+  const response = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(config.brapi.timeoutMs),
+  });
+
   if (!response.ok) {
-    throw new BrapiError(`Failed to fetch stock quote for ${symbol}`, { status: response.status });
+    const message = response.status === 404
+      ? `Unknown symbol: ${symbol}`
+      : `brapi responded ${response.status} for ${symbol}`;
+    throw new BrapiError(message, { status: response.status });
   }
 
   const body = (await response.json()) as BrapiQuoteResponse;
   const result = body?.results?.[0];
+
   if (!result) {
-    throw new BrapiError(`No stock quote found for ${symbol}`, { status: 404 });
+    throw new BrapiError(`Unknown symbol: ${symbol}`, { status: 404 });
   }
+
   return result;
 }
 
-export async function fetchStockQuotes(symbols: string[]): Promise<StockQuote[]> {
-  let lastError: Error | null = null;
+async function fetchOne(symbol: string): Promise<StockQuote> {
+  let lastError: unknown;
 
   for (let attempt = 0; attempt < config.brapi.retryCount; attempt++) {
     try {
-      const quotes = await Promise.all(symbols.map(requestStockQuote));
-      return quotes.map(normalizeSymbol);
+      return normalizeSymbol(await requestStockQuote(symbol));
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = error;
+      if (!isRetryable(error) || attempt === config.brapi.retryCount - 1) break;
+      const delay = config.brapi.retryBaseDelayMs * 2 ** attempt;
+      await sleep(delay + Math.floor(Math.random() * 100));
     }
   }
 
-  throw lastError;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+
+export async function fetchStockQuotes(symbols: string[]): Promise<StockQuote[]> {
+  return Promise.all(symbols.map(fetchOne));
 }

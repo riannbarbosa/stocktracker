@@ -1,21 +1,17 @@
 import  Fastify from "fastify";
 import { config } from "./config.ts";
-import { quoteRotes } from "./routes/quotes.ts";
+import { quoteRoutes, healthRoutes } from "./routes/index.ts";
+import type { FastifyInstance, FastifyServerOptions } from "fastify";
 
-export async function startServer(options = {}) {
+export async function buildApp(options: FastifyServerOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: { level: config.logLevel },
    ...options,    
   });
 
-  app.get("/healthz", async () => {
-    return {
-      status: 'ok',
-      uptimeSeconds: Math.round(process.uptime()),
-    };
-  });
+  app.register(healthRoutes);
+  app.register(quoteRoutes);
 
-  app.register(quoteRotes);
 
 
   return app; 
