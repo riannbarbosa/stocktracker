@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { config } from '../config.ts';
 import type { BrapiQuote, BrapiQuoteResponse, StockQuote } from '../types/brapi.ts';
+
 export class BrapiError extends Error {
   status: number;
 
@@ -24,14 +25,14 @@ function normalizeSymbol(raw: BrapiQuote): StockQuote {
     change: raw.regularMarketChange ?? null,
     changePercent: raw.regularMarketChangePercent ?? null,
     time: raw.regularMarketTime ?? null,
-    marketCap: raw.marketCap ?? null,
+    marketCap: raw.marketCap ?? null,   
     volume: raw.regularMarketVolume ?? null,
     logoUrl: raw.logourl ?? null,
     fetchedAt: new Date().toISOString()
   }
 }
 
-function isRetryable(error: unknown): boolean {
+function isRetryable(error: unknown): boolean { 
   if (error instanceof BrapiError) {
     return error.status >= 500 || error.status === 429;
   }

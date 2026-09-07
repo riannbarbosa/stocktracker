@@ -1,8 +1,6 @@
 import { createClient } from 'redis';
 import { config } from '../config.ts';
 
-type RedisClientType = ReturnType<typeof createClient>;
-
 function reconnectStrategy(retries: number, cause: Error): number {
   const delay = Math.min(2 ** retries * 50, config.redis.reconnectMaxDelayMs);
   const retryIn = delay + Math.floor(Math.random() * 200);
@@ -18,6 +16,8 @@ const client = createClient({
         reconnectStrategy
     }
 });
+
+type RedisClientType = typeof client;
 
 client.on('error', (err: Error) => {
     console.error('Redis Client Error:', err.message || (err as NodeJS.ErrnoException).code || err.name);

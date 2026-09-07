@@ -64,7 +64,7 @@ up:
 build: up
 
 start:
-	docker compose start
+	docker compose start	
 
 down:
 	docker compose down -v

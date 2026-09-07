@@ -26,7 +26,7 @@ export const config = {
     startupRetryDelayMs: num(process.env.PG_STARTUP_RETRY_DELAY_MS, 1000),
   },
   brapi: {
-    baseUrl: process.env.BRAPI_BASE_URL ?? "https://brapi.dev/api/v2" ,
+    baseUrl: process.env.BRAPI_BASE_URL ?? "https://brapi.dev/api",
     token: process.env.BRAPI_TOKEN ?? null,
     timeoutMs: Number(process.env.BRAPI_TIMEOUT_MS) || 5000,
     retryCount: Number(process.env.BRAPI_RETRY_COUNT) || 3,
@@ -43,6 +43,11 @@ export const config = {
     maxPoolSize: Number(process.env.DB_MAX_POOL_SIZE) || 10,
     idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS) || 30000,
     connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS) || 5000,
+  },
+   quotes: {
+    cacheTtlSeconds: num(process.env.QUOTE_CACHE_TTL, 60),
+    cachePrefix: process.env.QUOTE_CACHE_PREFIX ?? 'quote:',
+    maxSymbolsPerRequest: num(process.env.QUOTE_MAX_SYMBOLS, 10),
   },
   quoteCacheTTL: Number(process.env.QUOTE_CACHE_TTL) ||  60 // 1 hour
 };
