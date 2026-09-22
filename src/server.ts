@@ -1,32 +1,51 @@
-import { buildApp } from "./app.ts";
-import { config } from "./config.ts";
-import { connectRedis, disconnectRedis } from "./redis/redis.ts";
-
+import { buildApp } from './app.ts';
+import { config } from './config.ts';
+import { connectRedis, disconnectRedis } from './redis/redis.ts';
+import { closeDatabase } from './db/pool.ts';
+import { migrateDatabase } from './db/migrate.ts';
+import { createAlertPoller } from './workers/alertPoller.ts';
 
 const app = await buildApp();
 
-void connectRedis().then(() => app.log.info({}, 'redis connected')).catch((err) => {
-  app.log.error({ err: err.message }, 'redis connection failed');
-  process.exit(1);
-});
+/* Postgres is required — alerts and the watchlist live there, so a boot without
+ * a schema is a broken deploy, not a degraded one. */
+await migrateDatabase((msg) => app.log.info({}, msg));
+
+/* Redis is not awaited on purpose: the reconnect strategy retries forever, so
+ * awaiting connect() would hang the boot while a cache outage should only cost
+ * latency. isRedisReady() gates every cache access until it comes up. */
+void connectRedis()
+  .then(() => app.log.info({}, 'redis connected'))
+  .catch((err: Error) => app.log.warn({ err: err.message }, 'redis unavailable, serving without cache'));
+
+const poller = createAlertPoller(app.log);
+if (config.alerts.pollerEnabled) {
+  poller.start();
+} else {
+  app.log.info({}, 'alert poller disabled');
+}
 
 let shuttingDown = false;
+
 async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown)  return;
+  if (shuttingDown) return;
   shuttingDown = true;
+
   app.log.info({ signal }, 'shutting down');
   try {
+    await poller.stop();
     await app.close();
     await disconnectRedis();
+    await closeDatabase();
     process.exit(0);
   } catch (error) {
-     app.log.error({ err: error instanceof Error ? error.message : String(error) }, 'error during shutdown');
+    app.log.error({ err: error instanceof Error ? error.message : String(error) }, 'error during shutdown');
     process.exit(1);
   }
 }
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.on(signal, () => shutdown(signal));
+  process.on(signal, () => void shutdown(signal));
 }
 
 try {

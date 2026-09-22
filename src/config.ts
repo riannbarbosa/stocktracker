@@ -3,6 +3,30 @@ function num(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/* pg_try_advisory_lock() takes a bigint, so a readable env value is folded into
+ * a stable 32-bit key instead of being passed through as text. A numeric value
+ * is used as-is. */
+function lockKeyOf(raw: string | undefined, fallback: string): number {
+  const value = raw === undefined || raw === '' ? fallback : raw;
+  if (/^-?\d+$/.test(value)) return Number(value);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function list(raw: string | undefined, fallback: string[]): string[] {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  return raw.split(',').map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== '');
+}
+
+/* Accepts "https" or "https:" and normalizes to what URL.protocol returns. */
+function schemes(raw: string | undefined, fallback: string[]): string[] {
+  return list(raw, fallback).map((scheme) => (scheme.endsWith(':') ? scheme : `${scheme}:`));
+}
+
 function bool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined || raw === '') return fallback;
   return raw === '1' || raw.toLowerCase() === 'true';
@@ -36,7 +60,8 @@ export const config = {
     pollerEnabled: bool(process.env.ALERTS_POLLER_ENABLED, true),
     pollerIntervalMs: Number(process.env.ALERTS_POLLER_INTERVAL_MS) || 60000, // 1 minute
     batchSize: Number(process.env.ALERTS_BATCH_SIZE) || 100,
-    lockKey: process.env.ALERTS_LOCK_KEY ?? "alerts_poller_lock",
+    lockKey: lockKeyOf(process.env.ALERTS_LOCK_KEY, "alerts_poller_lock"),
+    pollIntervalMs: Number(process.env.ALERTS_POLL_INTERVAL_MS) || 60000, // 1 minute
   },
   db: {
     connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/stocktracker",
@@ -48,6 +73,16 @@ export const config = {
     cacheTtlSeconds: num(process.env.QUOTE_CACHE_TTL, 60),
     cachePrefix: process.env.QUOTE_CACHE_PREFIX ?? 'quote:',
     maxSymbolsPerRequest: num(process.env.QUOTE_MAX_SYMBOLS, 10),
+  },
+  notifications: {
+    webhookTimeoutMs: num(process.env.WEBHOOK_TIMEOUT_MS, 5000),
+    /* A user-supplied webhook destination is checked against these before every
+     * delivery; see src/lib/webhookUrl.ts. */
+    webhookSchemes: schemes(process.env.WEBHOOK_ALLOWED_SCHEMES, ['https']),
+    webhookAllowedHosts: list(process.env.WEBHOOK_ALLOWED_HOSTS, []),
+    webhookAllowPrivate: bool(process.env.WEBHOOK_ALLOW_PRIVATE, false),
+    smtpUrl: process.env.SMTP_URL ?? null,
+    emailFrom: process.env.EMAIL_FROM ?? 'stocktracker@localhost',
   },
   quoteCacheTTL: Number(process.env.QUOTE_CACHE_TTL) ||  60 // 1 hour
 };

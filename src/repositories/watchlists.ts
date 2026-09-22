@@ -18,7 +18,7 @@ function items(row: WatchlistRow): WatchlistItem {
 }
 export async function listWatchlist(owner: string): Promise<WatchlistItem[]> {
     const { rows } = await pool.query<WatchlistRow>(
-        'SELECT id, symbol, owner, created_at FROM watchlists WHERE owner = $1',
+        'SELECT id, symbol, owner, created_at FROM watchlist WHERE owner = $1',
         [owner]
     );
     return rows.map(items);
@@ -26,15 +26,15 @@ export async function listWatchlist(owner: string): Promise<WatchlistItem[]> {
 
 export async function addToWatchlist(owner: string, symbol: string): Promise<WatchlistItem> {
     const { rows } = await pool.query<WatchlistRow>(
-        'INSERT INTO watchlists (symbol, owner) VALUES ($1, $2) ON CONFLICT (symbol, owner) DO UPDATE SET symbol = EXCLUDED.symbol RETURNING id, symbol, owner, created_at',
-        [owner, symbol.toUpperCase()]
+        'INSERT INTO watchlist (symbol, owner) VALUES ($1, $2) ON CONFLICT (symbol, owner) DO UPDATE SET symbol = EXCLUDED.symbol RETURNING id, symbol, owner, created_at',
+        [symbol.toUpperCase(), owner]
     );
     return items(rows[0]!);
 }
 
 export async function removeFromWatchlist(owner: string, symbol: string): Promise<boolean> {
     const { rowCount } = await pool.query(
-        'DELETE FROM watchlists WHERE owner = $1 AND symbol = $2',
+        'DELETE FROM watchlist WHERE owner = $1 AND symbol = $2',
         [owner, symbol.toUpperCase()]
     );
     return (rowCount ?? 0) > 0;
