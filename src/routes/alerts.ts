@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { SYMBOL_PATTERN } from '../lib/symbols.ts';
+import { assertWebhookAllowed, WebhookUrlError } from '../lib/webhookUrl.ts';
 import { createAlert, deleteAlert, findAlert, listAlerts } from '../repositories/alerts.ts';
 import type { AlertDirection } from '../types/alerts.ts';
 
@@ -118,6 +119,19 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
     }, async(request, reply) => {
         if(!request.body.webhookUrl && !request.body.email) {
             return reply.status(400).send({ error: 'At least one notification method (webhookUrl or email) must be provided' });
+        }
+        /* `format: 'uri'` admits any scheme and host, so the destination is
+         * vetted here: a rejected URL is the client's mistake, not a delivery
+         * failure discovered a minute later by the poller. */
+        if (request.body.webhookUrl) {
+            try {
+                await assertWebhookAllowed(request.body.webhookUrl);
+            } catch (error) {
+                if (error instanceof WebhookUrlError) {
+                    return reply.status(400).send({ error: error.message });
+                }
+                throw error;
+            }
         }
         const alert = await createAlert({
             symbol:  request.body.symbol,

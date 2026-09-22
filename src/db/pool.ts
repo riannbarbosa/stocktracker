@@ -28,6 +28,6 @@ export async function pingDatabase(): Promise<void> {
     }
 }
 
-export async function closePool(): Promise<void> {
+export async function closeDatabase(): Promise<void> {
     await pool.end();
 }
