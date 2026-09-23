@@ -1,4 +1,11 @@
-# Stocktracker API
+# 📈 Stocktracker API
+
+[![CI](https://github.com/riannbarbosa/stocktracker/actions/workflows/ci.yml/badge.svg)](https://github.com/riannbarbosa/stocktracker/actions/workflows/ci.yml)
+![Node](https://img.shields.io/badge/Node-22-5FA04E?logo=node.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Fastify](https://img.shields.io/badge/Fastify-5-000000?logo=fastify&logoColor=white)
+![Postgres](https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-FF4438?logo=redis&logoColor=white)
 
 REST API serving B3 (Brazilian stock exchange) quotes, fetched from
 [brapi.dev](https://brapi.dev) and cached in Redis, plus a watchlist and price
@@ -7,7 +14,21 @@ alerts stored in Postgres and delivered by webhook or email.
 Built with Fastify 5 on Node 22, running the TypeScript sources directly via
 native type stripping — there is no build step.
 
-## Stack
+## 📑 Contents
+
+- [🧱 Stack](#-stack)
+- [🚀 Quick start](#-quick-start)
+- [📡 Endpoints](#-endpoints)
+- [💹 How a quote is resolved](#-how-a-quote-is-resolved)
+- [🔔 How an alert fires](#-how-an-alert-fires)
+- [🧪 Worked example: an alert end to end](#-worked-example-an-alert-end-to-end)
+- [⚙️ Configuration](#-configuration)
+- [🔒 Security posture](#-security-posture)
+- [📜 Scripts](#-scripts)
+- [🐳 Make targets](#-make-targets)
+- [🗂️ Project layout](#-project-layout)
+
+## 🧱 Stack
 
 | Piece | Choice |
 | --- | --- |
@@ -19,7 +40,7 @@ native type stripping — there is no build step.
 | Package manager | Yarn 4 (PnP locally, node-modules in the image) |
 | Tests | `node --test` |
 
-## Quick start
+## 🚀 Quick start
 
 ### Docker (recommended)
 
@@ -53,12 +74,37 @@ yarn install
 yarn dev        # watch mode
 ```
 
+> **Upgrading an existing volume:** `watchlist.owner` became
+> `watchlist.owner_id` when authentication landed. `schema.sql` is idempotent
+> DDL applied on boot, and `CREATE TABLE IF NOT EXISTS` cannot change an
+> existing table, so run `make down` once (it drops the volume) and start again.
+> This is the point at which the project would outgrow boot-time DDL and want
+> numbered migrations.
+
 > Postgres is **required**: `migrateDatabase()` applies `src/db/schema.sql` on
 > every boot, and a failure there aborts startup — a boot without a schema is a
 > broken deploy, not a degraded one. Redis is **not** required: `connectRedis()`
 > is deliberately not awaited, so a cache outage costs latency, not availability.
 
-## Endpoints
+## 📡 Endpoints
+
+🔓 public · 🔒 needs `Authorization: Bearer <token>`
+
+| | Method | Route | What |
+| --- | --- | --- | --- |
+| 🔓 | `GET` | `/quotes/:symbols` | Quotes for up to 10 tickers, Redis-cached |
+| 🔓 | `POST` | `/auth/register` | Create an account, get a token |
+| 🔓 | `POST` | `/auth/login` | Exchange credentials for a token |
+| 🔒 | `POST` | `/auth/logout-all` | Revoke every token issued to the account |
+| 🔒 | `GET` | `/watchlist` | Tickers you track |
+| 🔒 | `POST` | `/watchlist` | Track a ticker (idempotent) |
+| 🔒 | `DELETE` | `/watchlist/:symbol` | Stop tracking one |
+| 🔒 | `GET` | `/alerts` | Your price alerts |
+| 🔒 | `POST` | `/alerts` | Create a price alert |
+| 🔒 | `GET` | `/alerts/:id` | One alert |
+| 🔒 | `DELETE` | `/alerts/:id` | Delete one |
+| 🔓 | `GET` | `/healthz` · `/readyz` | Liveness · readiness |
+| 🔓 | `GET` | `/docs` | Swagger UI (spec at `/docs/json`) |
 
 ### `GET /quotes/:symbols`
 
@@ -100,11 +146,57 @@ the value.
 | 404 | brapi does not know one of the symbols |
 | 502 | brapi unavailable after retries |
 
+### `POST /auth/register`, `POST /auth/login`
+
+`/quotes` and the health probes are public. `/watchlist` and `/alerts` are not:
+they need `Authorization: Bearer <token>`, and every row they touch belongs to
+the user in that token.
+
+```bash
+curl -X POST http://localhost:3000/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"a-long-enough-password"}'
+```
+
+```json
+{ "token": "eyJhbGciOiJIUzI1NiIs...", "expiresIn": 3600 }
+```
+
+`login` takes the same body and returns the same shape. Passwords are hashed
+with `scrypt` (`node:crypto`, no native dependency) and a per-password salt;
+tokens are HS256, signed and verified by `@fastify/jwt`.
+
+| Route | Status | Meaning |
+| --- | --- | --- |
+| `POST /auth/register` | 201 | Account created, token issued |
+| `POST /auth/register` | 400 | Bad address, or password under 12 characters |
+| `POST /auth/register` | 409 | Address already registered |
+| `POST /auth/login` | 200 | Token issued |
+| `POST /auth/login` | 401 | Wrong password **or** unknown address — the reply is identical either way, so the endpoint cannot be used to discover which addresses exist |
+
+Every protected route answers **401** without a token, and Swagger UI has an
+**Authorize** button that puts one on each request.
+
+#### `POST /auth/logout-all` 🔒
+
+Revokes every token already issued to the account, including the one used to
+make the call:
+
+```bash
+curl -X POST http://localhost:3000/auth/logout-all \
+  -H "authorization: Bearer $TOKEN"
+```
+
+```json
+{ "tokenVersion": 1 }
+```
+
+Use it after a suspected leak. A future password-change route should call the
+same path — see [Security posture](#-security-posture) for how it works.
+
 ### `GET /watchlist`
 
-Tickers being tracked. There is no authentication and no per-user identity yet —
-every caller shares the single `default` owner (`DEFAULT_OWNER` in
-`src/routes/watchlist.ts`).
+Tickers tracked by the authenticated user.
 
 ```bash
 curl -X POST http://localhost:3000/watchlist \
@@ -114,7 +206,7 @@ curl -X DELETE http://localhost:3000/watchlist/PETR4
 ```
 
 ```json
-[{ "id": 1, "symbol": "PETR4", "owner": "default", "createdAt": "2026-09-22T02:21:58.213Z" }]
+[{ "id": 1, "symbol": "PETR4", "ownerId": 1, "createdAt": "2026-09-22T02:21:58.213Z" }]
 ```
 
 Tickers are upper-cased on the way in. `POST` is idempotent — re-adding a ticker
@@ -156,11 +248,12 @@ whole job — you do not poll, acknowledge or close anything afterwards.
 Of the twelve fields that come back, you send four. `id`, `active`, `createdAt`
 and `updatedAt` come from the database, and `firedAt`, `lastPrice` and
 `lastCheckedAt` are the poller's, written as it works. See
-[Worked example](#worked-example-an-alert-end-to-end) for the full lifecycle
+[Worked example](#-worked-example-an-alert-end-to-end) for the full lifecycle
 with real output.
 
-Alerts have no owner column, so `GET /alerts` returns every alert in the
-database and `DELETE /alerts/:id` deletes by id alone.
+`GET /alerts` returns only your own alerts, and `GET`/`DELETE /alerts/:id`
+answer **404** for someone else's id — not 403, which would confirm the id
+exists.
 
 | Route | Status | Meaning |
 | --- | --- | --- |
@@ -190,7 +283,7 @@ cache.
 Swagger UI, generated from the route schemas (OpenAPI 3.1). The raw spec is
 served at `GET /docs/json`.
 
-## How a quote is resolved
+## 💹 How a quote is resolved
 
 1. Symbols are normalized (trimmed, uppercased, de-duplicated).
 2. A single `MGET` looks up `quote:<SYMBOL>` for all of them.
@@ -203,7 +296,7 @@ Redis is treated as optional throughout: a failed read logs a warning and falls
 through to brapi, and a failed write is swallowed. A cache entry that fails to
 parse counts as a miss and gets overwritten.
 
-## How an alert fires
+## 🔔 How an alert fires
 
 `src/workers/alertPoller.ts` runs **in the same process as the API**, started
 from `src/server.ts` when `ALERTS_POLLER_ENABLED` is on. Every
@@ -233,7 +326,7 @@ from `src/server.ts` when `ALERTS_POLLER_ENABLED` is on. Every
 channel throws `nodemailer is not installed` until you `yarn add nodemailer`.
 The webhook channel works out of the box.
 
-## Worked example: an alert end to end
+## 🧪 Worked example: an alert end to end
 
 Real output from a local run. Three settings make it fast and deterministic —
 a 3s cycle instead of 60s, a price pinned in the cache so the run does not
@@ -327,7 +420,7 @@ curl http://localhost:3000/alerts                # watch firedAt/lastPrice fill 
 Pinning the cached price by hand, as in step 4 above, is how you force a re-arm
 without waiting for the market to move.
 
-## Configuration
+## ⚙️ Configuration
 
 Every variable has a default in `src/config.ts`, so `.env` only needs the ones
 you want to change. `.env.example` documents the full set.
@@ -353,11 +446,18 @@ you want to change. `.env.example` documents the full set.
 | `ALERTS_BATCH_SIZE` | `100` | Alerts evaluated per cycle |
 | `ALERTS_LOCK_KEY` | `alerts_poller_lock` | Folded into a bigint for `pg_try_advisory_lock` |
 | `WEBHOOK_TIMEOUT_MS` | `5000` | Per-delivery `AbortSignal.timeout` |
+| `JWT_SECRET` | **none** | Required. The boot throws without it — see below |
+| `JWT_TTL_SECONDS` | `3600` | Token lifetime; there is no revocation, so keep it short |
 | `WEBHOOK_ALLOWED_SCHEMES` | `https` | Accepts `https` or `https:`; comma-separated |
 | `WEBHOOK_ALLOWED_HOSTS` | *(empty)* | When set, **only** these hosts are accepted, and they skip the private-range check |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Dev escape hatch — skips the private/loopback check |
 | `SMTP_URL` | *(none)* | Required for the email channel |
 | `EMAIL_FROM` | `stocktracker@localhost` | `From:` on alert mail |
+
+`JWT_SECRET` is the one variable with **no default**. Every other key falls back
+so the app boots out of the box; a signing secret that falls back is a signing
+secret that reaches production unchanged, so `src/config.ts` throws instead.
+Generate one with `openssl rand -base64 48`.
 
 Two details worth knowing when editing `.env`:
 
@@ -371,12 +471,12 @@ Two `config.alerts` keys look alike: the poller reads **`pollIntervalMs`**
 (`ALERTS_POLL_INTERVAL_MS`). `pollerIntervalMs` (`ALERTS_POLLER_INTERVAL_MS`,
 the one `.env.example` lists) is not read by anything.
 
-## Security posture
+## 🔒 Security posture
 
 Reviewed on this branch. One real finding, two things that are posture rather
 than bugs — worth knowing before exposing this to anything but localhost.
 
-### Webhook destinations are validated (SSRF, fixed)
+### ✅ Webhook destinations are validated (SSRF, fixed)
 
 `webhookUrl` is caller-chosen and the poller POSTs to it from inside the
 deployment network, so `format: 'uri'` is not a control — it admits any scheme
@@ -408,21 +508,46 @@ the request somewhere else (DNS rebinding). Closing that requires pinning the
 validated address with a custom undici dispatcher, which is not implemented.
 `WEBHOOK_ALLOWED_HOSTS` is not affected, since it never resolves at all.
 
-### Posture, not a bug: there is no authentication
+### ✅ Authentication and per-user scoping
 
-`/quotes`, `/watchlist`, `/alerts` and `/docs` are all open, and there is no user
-model at all — `alerts` has no owner column and the watchlist's `owner` is the
-constant `'default'`. That means `GET /alerts` returns every alert and
-`DELETE /alerts/:id` deletes by id alone, but it is not privilege escalation:
-anyone who can read can already write and delete. It is a single-user
-self-hosted service today.
+`/quotes` and the health probes are public. `/watchlist` and `/alerts` sit
+inside a Fastify plugin that registers the `onRequest` hook from
+`src/plugins/authenticate.ts`, so **a route added inside that scope is protected
+by default** — there is no per-route flag to forget.
 
-If auth is ever added, **`alerts` is the table that breaks.** It needs an `owner`
-column, and `listAlerts`, `findAlert` and `deleteAlert` all need the
-`WHERE owner = $1` predicate that `repositories/watchlists.ts` already has.
-Doing both at the same time avoids introducing a real IDOR later.
+The owner never comes from the request body. It is read from the verified token
+by `ownerOf()`, which throws if a route somehow ends up outside the
+authenticated scope, turning a wiring mistake into a loud failure instead of a
+silently undefined owner reaching the SQL. Every HTTP-facing query in
+`repositories/alerts.ts` and `repositories/watchlists.ts` carries
+`WHERE owner_id = $n`, and a miss returns 404 rather than 403 so ids cannot be
+enumerated.
 
-### Robustness: database errors reach the client verbatim
+The poller's queries — `listActiveAlerts`, `markAlertFired`,
+`markAlertRearmed`, `touchAlerts` — are deliberately **not** scoped: it runs
+in-process with no user in context and has to see every alert. Scoping them by
+mistake would stop every alert from ever firing, and the poller's own `catch`
+would swallow the error.
+
+**Revocation.** A signature alone cannot be revoked, which is inherent to
+stateless JWT rather than a bug — but the consequence is real, so it is closed
+here. `users.token_version` starts at 0 and is signed into every token as `ver`;
+the hook compares it against the stored value on each request, and
+`POST /auth/logout-all` increments it. Every token signed before that call stops
+verifying, immediately, even though its signature and `exp` are still fine. A
+deleted account reads back as no row at all and also fails closed.
+
+The price is one primary-key `SELECT` per authenticated request — the round trip
+stateless verification exists to avoid. At this scale that is the right trade;
+at a larger one you would cache the version, or move to refresh tokens with a
+session table and a much shorter access-token TTL.
+
+Two ordering notes: the hook is `onRequest`, so it runs **before** schema
+validation — an authenticated but malformed request still costs the version
+lookup. And tokens issued before this mechanism existed carry no `ver` claim, so
+they fail the comparison and are all invalidated, which is the desired outcome.
+
+### ⚠️ Robustness: database errors reach the client verbatim
 
 No handler wraps its queries and there is no `setErrorHandler`, so a `pg` failure
 surfaces through Fastify's default handler with the driver's message and
@@ -436,7 +561,7 @@ real error, return a generic one. A single `app.setErrorHandler` covers every
 route, and `exclusiveMinimum: 0` on `targetPrice` would turn that particular 500
 into a clean 400.
 
-### What is solid
+### ✅ What is solid
 
 Every SQL statement is parameterized (`$n` throughout `src/repositories/`,
 including the `UNNEST($1::bigint[])` bulk update) — no injection path. Nothing
@@ -446,7 +571,12 @@ applies `encodeURIComponent`. `format: 'email'` is enforced and admits no CR/LF,
 so there is no SMTP header injection. `src/db/migrate.ts` reads its schema path
 from `import.meta.dirname`, never from input.
 
-## Scripts
+## 📜 Scripts
+
+CI runs `typecheck`, `lint` and `test` on every push and pull request
+(`.github/workflows/ci.yml`). It needs no services — the suite stubs `fetch`,
+Redis and the pg pool — and `yarn install --immutable` fails the run if
+`yarn.lock` was not committed alongside a dependency change.
 
 ```bash
 yarn dev          # watch mode
@@ -463,7 +593,7 @@ Tests stub `fetch` and shadow the Redis and pg singletons' commands
 including the route tests, which drive the real Fastify instance through
 `app.inject()`.
 
-## Make targets
+## 🐳 Make targets
 
 | Target | What it does |
 | --- | --- |
@@ -473,7 +603,7 @@ including the route tests, which drive the real Fastify instance through
 | `make nuke` | `down -v --rmi all --remove-orphans` |
 | `make docker-install` / `docker-uninstall` | Install/remove Docker on apt or dnf systems |
 
-## Project layout
+## 🗂️ Project layout
 
 ```
 src/
@@ -481,27 +611,30 @@ src/
                      listens, handles SIGTERM/SIGINT
   app.ts             buildApp() — Fastify instance, swagger, route registration
   config.ts          env parsing, all defaults
-  routes/            quotes.ts, health.ts, alerts.ts, watchlist.ts
+  routes/            quotes.ts, health.ts, auth.ts, alerts.ts, watchlist.ts
                      (+ JSON schemas for docs & serialization)
+  plugins/
+    authenticate.ts  onRequest hook + ownerOf(), the only source of an owner id
   services/
     brapi.ts         upstream client: retries, BrapiError, normalization
     quotes.ts        cache-aside orchestration over brapi.ts
     alerts.ts        evaluateAlert() — the pure trigger/rearm/noop rule
+    auth.ts          scrypt password hashing (token signing is @fastify/jwt)
     notifier.ts      webhook + email delivery
-  repositories/      alerts.ts, watchlists.ts — all SQL lives here
+  repositories/      alerts.ts, watchlists.ts, users.ts — all SQL lives here
   workers/
     alertPoller.ts   in-process interval, advisory-locked
   redis/redis.ts     singleton client with reconnect strategy
   db/
     pool.ts          pg pool + pingDatabase()
     migrate.ts       waits for Postgres, applies schema.sql on boot
-    schema.sql       idempotent DDL: watchlist + alerts
+    schema.sql       idempotent DDL: users + watchlist + alerts
   lib/symbols.ts     ticker regex, normalization
   types/             brapi.ts, alerts.ts — upstream + normalized shapes
 tests/
-  services/          brapi, quotes, alerts, notifier
+  services/          brapi, quotes, alerts, notifier, auth
   repositories/      watchlists
-  routes/            watchlist (through app.inject)
+  routes/            auth, watchlist (through app.inject)
   workers/           alertPoller
   helpers/           fetch stub, fake redis, fake pg pool
 docs/

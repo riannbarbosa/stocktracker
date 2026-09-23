@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { SYMBOL_PATTERN } from '../lib/symbols.ts';
 import { assertWebhookAllowed, WebhookUrlError } from '../lib/webhookUrl.ts';
+import { ownerOf } from '../plugins/authenticate.ts';
 import { createAlert, deleteAlert, findAlert, listAlerts } from '../repositories/alerts.ts';
 import type { AlertDirection } from '../types/alerts.ts';
 
@@ -78,27 +79,31 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
     app.get('/alerts', {
         schema: {
             tags: ['alerts'],
+            security: [{ bearerAuth: [] }],
             summary: 'List all alerts',
             description: 'Returns every alert, most recently created first.',
             response: {
                 200: { type: 'array', items: alertSchema },
+                401: errorSchema,
             },
         },
-    }, async() => listAlerts());
+    }, async (request) => listAlerts(ownerOf(request)));
 
     app.get<{ Params: { id: number } }>('/alerts/:id', {
         schema: {
             tags: ['alerts'],
+            security: [{ bearerAuth: [] }],
             summary: 'Fetch a single alert',
             params: idParamsSchema,
             response: {
                 200: alertSchema,
                 400: validationErrorSchema,
+                401: errorSchema,
                 404: errorSchema,
             },
         },
     }, async (request, reply) => {
-        const alert = await findAlert(request.params.id);
+        const alert = await findAlert(request.params.id, ownerOf(request));
         if (!alert) return reply.status(404).send({ error: 'Alert not found' });
         return alert;
     });
@@ -106,6 +111,7 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
     app.post<{ Body: CreateAlertBody }>('/alerts', {
         schema: {
             tags: ['alerts'],
+            security: [{ bearerAuth: [] }],
             summary: 'Create a price alert',
             description:
                 'At least one notification method (webhookUrl or email) is required. ' +
@@ -114,6 +120,7 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
             response: {
                 201: alertSchema,
                 400: validationErrorSchema,
+                401: errorSchema,
             },
         },
     }, async(request, reply) => {
@@ -139,7 +146,7 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
             targetPrice: request.body.targetPrice,
             webhookUrl: request.body.webhookUrl ?? null,
             email: request.body.email ?? null,
-        });
+        }, ownerOf(request));
         return reply.status(201).send(alert);
     });
 
@@ -148,18 +155,20 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
         {
             schema: {
                 tags: ['alerts'],
+            security: [{ bearerAuth: [] }],
                 summary: 'Delete an alert',
                 description: 'Removes the alert so the background poller stops evaluating it.',
                 params: idParamsSchema,
                 response: {
                     204: { type: 'null', description: 'Alert deleted.' },
                     400: validationErrorSchema,
+                    401: errorSchema,
                     404: errorSchema,
                 },
             },
         },
         async (request, reply) => {
-        const deleted = await deleteAlert(request.params.id);
+        const deleted = await deleteAlert(request.params.id, ownerOf(request));
         if (!deleted) return reply.code(404).send({ error: 'alert not found' });
         return reply.code(204).send();
         },

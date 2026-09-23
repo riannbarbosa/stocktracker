@@ -3,6 +3,15 @@ function num(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function required(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+     throw new Error(`${name} is required — refusing to start with a default signing secret`);
+  }
+  return value;
+}
+
+
 /* pg_try_advisory_lock() takes a bigint, so a readable env value is folded into
  * a stable 32-bit key instead of being passed through as text. A numeric value
  * is used as-is. */
@@ -73,6 +82,10 @@ export const config = {
     cacheTtlSeconds: num(process.env.QUOTE_CACHE_TTL, 60),
     cachePrefix: process.env.QUOTE_CACHE_PREFIX ?? 'quote:',
     maxSymbolsPerRequest: num(process.env.QUOTE_MAX_SYMBOLS, 10),
+  },
+  auth: {
+    jwtSecret: required('JWT_SECRET'),
+    tokenTtlSeconds: num(process.env.JWT_TTL_SECONDS, 3600),
   },
   notifications: {
     webhookTimeoutMs: num(process.env.WEBHOOK_TIMEOUT_MS, 5000),

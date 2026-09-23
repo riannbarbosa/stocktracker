@@ -36,25 +36,33 @@ function toAlert(row: AlertRow): Alert {
 const COLUMNS = `id, symbol, direction, target_price, webhook_url, email, active,
                  fired_at, last_price, last_checked_at, created_at, updated_at`;
 
-export async function listAlerts(): Promise<Alert[]> {
-    const { rows } = await pool.query<AlertRow>(`SELECT ${COLUMNS} FROM alerts ORDER BY created_at DESC`);
+/* The four functions below serve HTTP requests and are scoped to one owner.
+ * The poller's functions further down are deliberately NOT scoped — it has no
+ * user in context and has to see every alert. */
+export async function listAlerts(ownerId: number): Promise<Alert[]> {
+    const { rows } = await pool.query<AlertRow>(
+        `SELECT ${COLUMNS} FROM alerts WHERE owner_id = $1 ORDER BY created_at DESC`,
+        [ownerId],
+    );
     return rows.map(toAlert);
 }
 
-export async function findAlert(id: number): Promise<Alert | null> {
+/* Another owner's id comes back as null so the route answers 404, not 403 —
+ * a 403 would confirm that the id exists and allow enumeration. */
+export async function findAlert(id: number, ownerId: number): Promise<Alert | null> {
   const { rows } = await pool.query<AlertRow>(
-    `SELECT ${COLUMNS} FROM alerts WHERE id = $1`,
-    [id],
+    `SELECT ${COLUMNS} FROM alerts WHERE id = $1 AND owner_id = $2`,
+    [id, ownerId],
   );
   const row = rows[0];
   return row ? toAlert(row) : null;
 }
 
 
-export async function createAlert(input: NewAlert): Promise<Alert> {
+export async function createAlert(input: NewAlert, ownerId: number): Promise<Alert> {
   const { rows } = await pool.query<AlertRow>(
-    `INSERT INTO alerts (symbol, direction, target_price, webhook_url, email)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO alerts (symbol, direction, target_price, webhook_url, email, owner_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING ${COLUMNS}`,
     [
       input.symbol.toUpperCase(),
@@ -62,16 +70,22 @@ export async function createAlert(input: NewAlert): Promise<Alert> {
       input.targetPrice,
       input.webhookUrl ?? null,
       input.email ?? null,
+      ownerId,
     ],
   );
   return toAlert(rows[0]!);
 }
 
-export async function deleteAlert(id: number): Promise<boolean> {
-    const { rowCount } = await pool.query(`DELETE FROM alerts WHERE id = $1`, [id]);
+export async function deleteAlert(id: number, ownerId: number): Promise<boolean> {
+    const { rowCount } = await pool.query(
+        `DELETE FROM alerts WHERE id = $1 AND owner_id = $2`,
+        [id, ownerId],
+    );
     return ( rowCount ?? 0) > 0;
 }
 
+/* Poller path from here down: no owner scope on purpose. Adding one here would
+ * silently stop every alert from ever firing. */
 export async function listActiveAlerts(limit: number): Promise<Alert[]> {
   const { rows } = await pool.query<AlertRow>(
     `SELECT ${COLUMNS} FROM alerts
