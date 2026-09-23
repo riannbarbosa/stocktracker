@@ -26,6 +26,6 @@ export interface NewAlert {
 export interface WatchlistItem {
   id: number;
   symbol: string;
-  owner: string;
+  ownerId: number;
   createdAt: string;
 }

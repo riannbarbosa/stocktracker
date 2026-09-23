@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same PR cancels the run still in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the `engines` field; the sources run under native type
+          # stripping, so there is no build step to cache.
+          node-version: 22
+
+      # Yarn 4 comes from the `packageManager` field in package.json.
+      - name: Enable corepack
+        run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+
+      # --immutable fails the run if yarn.lock would have to change, so a
+      # dependency added without committing the lockfile cannot pass.
+      - name: Install
+        run: yarn install --immutable
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Lint
+        run: yarn lint
+
+      # No services: the suite stubs fetch, Redis and the pg pool, so nothing
+      # here needs Postgres or a network. JWT_SECRET is set by the script.
+      - name: Test
+        run: yarn test

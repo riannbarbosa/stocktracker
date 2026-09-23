@@ -1,9 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { SYMBOL_PATTERN } from '../lib/symbols.ts';
 import { addToWatchlist, listWatchlist, removeFromWatchlist } from '../repositories/watchlists.ts';
-
-
-const DEFAULT_OWNER = 'default';
+import { ownerOf } from '../plugins/authenticate.ts';
 
 const symbolBodySchema = {
     type: 'object',
@@ -29,7 +27,7 @@ const watchlistItemSchema = {
     properties: {
         id: { type: 'integer' },
         symbol: { type: 'string', description: 'Ticker as listed on B3.' },
-        owner: { type: 'string', description: 'Owner the entry belongs to.' },
+        ownerId: { type: 'integer', description: 'User the entry belongs to.' },
         createdAt: { type: 'string', description: 'ISO 8601.' },
     },
 } as const;
@@ -56,44 +54,50 @@ export async function watchlistRoutes(app: FastifyInstance): Promise<void>  {
     app.get('/watchlist', {
         schema: {
             tags: ['watchlist'],
+            security: [{ bearerAuth: [] }],
             summary: 'List the watchlist',
-            description: `Returns every ticker tracked for the '${DEFAULT_OWNER}' owner.`,
+            description: 'Returns every ticker tracked by the authenticated user.',
             response: {
                 200: { type: 'array', items: watchlistItemSchema },
+                401: errorSchema,
             },
         },
-    }, async () => listWatchlist(DEFAULT_OWNER));
+    }, async (request) => listWatchlist(ownerOf(request)));
 
     app.post<{ Body: { symbol: string } }>('/watchlist', {
         schema: {
             tags: ['watchlist'],
+            security: [{ bearerAuth: [] }],
             summary: 'Add a ticker to the watchlist',
             description: 'Idempotent: adding a ticker already on the watchlist returns the existing entry.',
             body: symbolBodySchema,
             response: {
                 201: watchlistItemSchema,
                 400: validationErrorSchema,
+                401: errorSchema,
             },
         },
     }, async (request, reply) => {
         const { symbol } = request.body as { symbol: string };
-        const item = await addToWatchlist(DEFAULT_OWNER, symbol);
+        const item = await addToWatchlist(ownerOf(request), symbol);
         reply.code(201).send(item);
     });
 
     app.delete<{ Params: { symbol: string } }>('/watchlist/:symbol', {
         schema: {
             tags: ['watchlist'],
+            security: [{ bearerAuth: [] }],
             summary: 'Remove a ticker from the watchlist',
             params: symbolParamsSchema,
             response: {
                 204: { type: 'null', description: 'Ticker removed.' },
                 400: validationErrorSchema,
+                401: errorSchema,
                 404: errorSchema,
             },
         },
     }, async (request, reply) => {
-        const removed = await removeFromWatchlist(DEFAULT_OWNER, request.params.symbol);
+        const removed = await removeFromWatchlist(ownerOf(request), request.params.symbol);
         if (!removed) {
             return reply.status(404).send({ error: 'Symbol not found in watchlist' });
         }

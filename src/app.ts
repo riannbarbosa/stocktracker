@@ -1,10 +1,13 @@
 import Fastify from 'fastify';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
+import fastifyJwt from '@fastify/jwt';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import { config } from './config.ts';
+import { authenticate } from './plugins/authenticate.ts';
 import { healthRoutes } from './routes/health.ts';
 import { quoteRoutes } from './routes/quotes.ts';
+import { accountRoutes, authRoutes } from './routes/auth.ts';
 import { alertRoutes } from './routes/alerts.ts';
 import { watchlistRoutes } from './routes/watchlist.ts'
 
@@ -33,7 +36,15 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
         { name: 'watchlist', description: 'Tickers tracked for an owner.' },
         { name: 'alerts', description: 'Price alerts evaluated by the background poller.' },
         { name: 'health', description: 'Liveness and readiness probes.' },
+        { name: 'auth', description: 'Account creation and token issue.' },
       ],
+      /* Gives Swagger UI its Authorize button; the protected routes reference
+       * this scheme from their own schema. */
+      components: {
+        securitySchemes: {
+          bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+        },
+      },
     },
   });
 
@@ -42,10 +53,27 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
     uiConfig: { docExpansion: 'list', deepLinking: true },
   });
 
+  /* Registered before the routes so app.jwt exists when /auth/login signs, and
+   * before the hook that verifies. expiresIn is in seconds — verified by
+   * decoding a signed token, since fast-jwt documents some spans in ms. */
+  await app.register(fastifyJwt, {
+    secret: config.auth.jwtSecret,
+    sign: { expiresIn: config.auth.tokenTtlSeconds },
+    formatUser: (payload) => ({ id: Number(payload.sub), email: payload.email, tokenVersion: payload.ver }),
+  });
+
   app.register(healthRoutes);
   app.register(quoteRoutes);
-  app.register(alertRoutes);
-  app.register(watchlistRoutes);
+  app.register(authRoutes);
+
+  /* The hook is scoped to this plugin, so every route registered inside is
+   * authenticated and a new one cannot be added unprotected by accident. */
+  app.register(async (secured) => {
+    secured.addHook('onRequest', authenticate);
+    await secured.register(accountRoutes);
+    await secured.register(alertRoutes);
+    await secured.register(watchlistRoutes);
+  });
 
   return app; 
 }
