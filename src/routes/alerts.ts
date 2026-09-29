@@ -10,7 +10,6 @@ interface CreateAlertBody {
     direction: AlertDirection;
     targetPrice: number;
     webhookUrl?: string | null;
-    email?: string | null;
 }
 
 const createBodySchema = {
@@ -24,8 +23,7 @@ const createBodySchema = {
             description: "Fire when the price crosses targetPrice in this direction.",
         },
         targetPrice: { type: 'number', description: 'Price that triggers the alert.' },
-        webhookUrl: { type: ['string', 'null'], format: 'uri', description: 'POSTed to when the alert fires.' },
-        email: { type: ['string', 'null'], format: 'email', description: 'Notified when the alert fires.' },
+        webhookUrl: { type: ['string', 'null'], format: 'uri', description: 'Optional. POSTed to when the alert fires.' },
     },
 } as const;
 
@@ -47,7 +45,6 @@ const alertSchema = {
         direction: { type: 'string', enum: ['above', 'below'] as AlertDirection[] },
         targetPrice: { type: 'number', description: 'Price that triggers the alert.' },
         webhookUrl: { type: ['string', 'null'], description: 'POSTed to when the alert fires.' },
-        email: { type: ['string', 'null'], description: 'Notified when the alert fires.' },
         active: { type: 'boolean', description: 'Whether the poller still evaluates this alert.' },
         firedAt: { type: ['string', 'null'], description: 'When the alert last fired (ISO 8601).' },
         lastPrice: { type: ['number', 'null'], description: 'Price seen at the last poll.' },
@@ -114,8 +111,9 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
             security: [{ bearerAuth: [] }],
             summary: 'Create a price alert',
             description:
-                'At least one notification method (webhookUrl or email) is required. ' +
-                'The background poller evaluates the alert on each cycle.',
+                'The background poller evaluates the alert on each cycle. When it fires, ' +
+                'an in-app notification is created (see /notifications) and, if set, ' +
+                'webhookUrl is POSTed to.',
             body: createBodySchema,
             response: {
                 201: alertSchema,
@@ -124,9 +122,6 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
             },
         },
     }, async(request, reply) => {
-        if(!request.body.webhookUrl && !request.body.email) {
-            return reply.status(400).send({ error: 'At least one notification method (webhookUrl or email) must be provided' });
-        }
         /* `format: 'uri'` admits any scheme and host, so the destination is
          * vetted here: a rejected URL is the client's mistake, not a delivery
          * failure discovered a minute later by the poller. */
@@ -145,7 +140,6 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
             direction: request.body.direction,
             targetPrice: request.body.targetPrice,
             webhookUrl: request.body.webhookUrl ?? null,
-            email: request.body.email ?? null,
         }, ownerOf(request));
         return reply.status(201).send(alert);
     });

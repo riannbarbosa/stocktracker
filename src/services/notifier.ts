@@ -57,61 +57,16 @@ async function sendWebhook(url: string, payload: AlertPayload): Promise<void> {
     }
 }
 
-interface MailTransport {
-     sendMail: (options: { from: string; to: string; subject: string; text: string }) => Promise<unknown>;
-}
-
-interface NodemailerModule {
-    createTransport: (url: string) => MailTransport;
-}
-
-async function sendEmail(to: string, payload: AlertPayload): Promise<void> {
-    const smtpUrl = config.notifications.smtpUrl;
-    if (!smtpUrl) {
-        throw new Error('SMTP URL is not configured');
-    }
-    const specifier = 'nodemailer';
-    const loaded = await import(specifier).catch(() => {
-        throw new Error('nodemailer is not installed (yarn add nodemailer)');
-    }) as unknown as { default?: NodemailerModule } & Partial<NodemailerModule>;
-
-    const nodemailer = loaded.default ?? (loaded as NodemailerModule);
-    const transporter = nodemailer.createTransport(smtpUrl);
-    const direction = payload.direction === 'above' ? 'reached or passed' : 'dropped to or below';
-
-    await transporter.sendMail({
-        from: config.notifications.emailFrom,
-        to,
-        subject: `${payload.symbol} ${direction} ${payload.targetPrice}`,
-        text: `${payload.symbol} is at ${payload.price} (target ${payload.targetPrice}, ${payload.direction}).`,
-    });
-}
-
+/* External delivery only. The in-app notification is not sent from here: it is
+ * written by markAlertFired() in the same statement that latches the alert, so
+ * an alert without a webhook has nothing left to do at this point. */
 export async function notifyAlert(alert: Alert, price: number, logger: Logger): Promise<void> {
-    const payload = buildPayload(alert, price); 
-    const deliveries: Array<Promise<void>> = [];
+    if (!alert.webhookUrl) return;
 
-    if (alert.webhookUrl) {
-        deliveries.push(sendWebhook(alert.webhookUrl, payload).catch((err) => {
-            logger.error({ alertId: alert.id, webhookUrl: alert.webhookUrl, err }, 'failed to send webhook notification');
-        }));
+    try {
+        await sendWebhook(alert.webhookUrl, buildPayload(alert, price));
+        logger.info({ alertId: alert.id, symbol: alert.symbol, price }, 'alert webhook delivered');
+    } catch (err) {
+        logger.error({ alertId: alert.id, webhookUrl: alert.webhookUrl, err }, 'failed to send webhook notification');
     }
-
-     if (alert.email) {
-    deliveries.push(
-      sendEmail(alert.email, payload).catch((error: Error) => {
-        logger.error({ alertId: alert.id, err: error.message }, 'email delivery failed');
-      }),
-    );
-  }
-
-
-  if (deliveries.length === 0) {
-    logger.warn({ alertId: alert.id }, 'alert has no delivery channel');
-    return;
-  }
-
-  await Promise.all(deliveries);
-  logger.info({ alertId: alert.id, symbol: alert.symbol, price }, 'alert notified');
-
 }

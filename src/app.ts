@@ -10,6 +10,9 @@ import { quoteRoutes } from './routes/quotes.ts';
 import { accountRoutes, authRoutes } from './routes/auth.ts';
 import { alertRoutes } from './routes/alerts.ts';
 import { watchlistRoutes } from './routes/watchlist.ts'
+import { notificationRoutes } from './routes/notifications.ts';
+
+const REQUIRES_AUTH = 'Requires Auth';
 
 export async function buildApp(options: FastifyServerOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
@@ -35,6 +38,7 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
         { name: 'quotes', description: 'B3 quote lookups, served from Redis when cached.' },
         { name: 'watchlist', description: 'Tickers tracked for an owner.' },
         { name: 'alerts', description: 'Price alerts evaluated by the background poller.' },
+        { name: 'notifications', description: 'In-app notifications created when an alert fires.' },
         { name: 'health', description: 'Liveness and readiness probes.' },
         { name: 'auth', description: 'Account creation and token issue.' },
       ],
@@ -50,7 +54,7 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
 
   await app.register(fastifySwaggerUi, {
     routePrefix: '/docs',
-    uiConfig: { docExpansion: 'list', deepLinking: true },
+    uiConfig: { docExpansion: 'list', deepLinking: true }
   });
 
   /* Registered before the routes so app.jwt exists when /auth/login signs, and
@@ -70,9 +74,17 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
    * authenticated and a new one cannot be added unprotected by accident. */
   app.register(async (secured) => {
     secured.addHook('onRequest', authenticate);
+    secured.addHook('onRoute', (route) => {
+      const schema = (route.schema ??= {}) as { summary?: string; security?: unknown[] };
+      schema.security ??= [{ bearerAuth: [] }];
+      if (!schema.summary?.includes(REQUIRES_AUTH)) {
+        schema.summary = schema.summary ? `${schema.summary} (${REQUIRES_AUTH})` : REQUIRES_AUTH;
+      } 
+    });
     await secured.register(accountRoutes);
     await secured.register(alertRoutes);
     await secured.register(watchlistRoutes);
+    await secured.register(notificationRoutes);
   });
 
   return app; 

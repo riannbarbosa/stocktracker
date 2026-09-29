@@ -94,8 +94,6 @@ export const config = {
     webhookSchemes: schemes(process.env.WEBHOOK_ALLOWED_SCHEMES, ['https']),
     webhookAllowedHosts: list(process.env.WEBHOOK_ALLOWED_HOSTS, []),
     webhookAllowPrivate: bool(process.env.WEBHOOK_ALLOW_PRIVATE, false),
-    smtpUrl: process.env.SMTP_URL ?? null,
-    emailFrom: process.env.EMAIL_FROM ?? 'stocktracker@localhost',
   },
   quoteCacheTTL: Number(process.env.QUOTE_CACHE_TTL) ||  60 // 1 hour
 };

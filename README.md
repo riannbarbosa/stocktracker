@@ -9,7 +9,8 @@
 
 REST API serving B3 (Brazilian stock exchange) quotes, fetched from
 [brapi.dev](https://brapi.dev) and cached in Redis, plus a watchlist and price
-alerts stored in Postgres and delivered by webhook or email.
+alerts stored in Postgres that land as in-app notifications (and, optionally,
+a webhook).
 
 Built with Fastify 5 on Node 22, running the TypeScript sources directly via
 native type stripping — there is no build step.
@@ -103,6 +104,9 @@ yarn dev        # watch mode
 | 🔒 | `POST` | `/alerts` | Create a price alert |
 | 🔒 | `GET` | `/alerts/:id` | One alert |
 | 🔒 | `DELETE` | `/alerts/:id` | Delete one |
+| 🔒 | `GET` | `/notifications` | Alert firings, newest first (`?unread=true`) |
+| 🔒 | `PATCH` | `/notifications/:id/read` | Mark one read |
+| 🔒 | `POST` | `/notifications/read-all` | Mark all read |
 | 🔓 | `GET` | `/healthz` · `/readyz` | Liveness · readiness |
 | 🔓 | `GET` | `/docs` | Swagger UI (spec at `/docs/json`) |
 
@@ -223,8 +227,9 @@ returns the existing row rather than erroring.
 ### `GET /alerts`, `POST /alerts`, `GET /alerts/:id`, `DELETE /alerts/:id`
 
 Price alerts. Each one names a ticker, a `direction` (`above` / `below`), a
-`targetPrice`, and at least one delivery channel — `webhookUrl`, `email`, or
-both. A request with neither is rejected with 400.
+`targetPrice`, and an optional `webhookUrl`. Every firing creates an in-app
+notification (see [`/notifications`](#get-notifications-patch-notificationsidread-post-notificationsread-all));
+the webhook, when set, is POSTed to as well.
 
 ```bash
 curl -X POST http://localhost:3000/alerts \
@@ -236,7 +241,7 @@ curl -X POST http://localhost:3000/alerts \
 ```json
 {
   "id": 1, "symbol": "PETR4", "direction": "below", "targetPrice": 30,
-  "webhookUrl": "https://hooks.example.test/petr4", "email": null,
+  "webhookUrl": "https://hooks.example.test/petr4",
   "active": true, "firedAt": null, "lastPrice": null, "lastCheckedAt": null,
   "createdAt": "2026-09-22T02:22:28.381Z", "updatedAt": "2026-09-22T02:22:28.381Z"
 }
@@ -245,7 +250,7 @@ curl -X POST http://localhost:3000/alerts \
 Read that as **"tell me when PETR4 drops to 30 or below"**. That request is the
 whole job — you do not poll, acknowledge or close anything afterwards.
 
-Of the twelve fields that come back, you send four. `id`, `active`, `createdAt`
+Of the eleven fields that come back, you send four. `id`, `active`, `createdAt`
 and `updatedAt` come from the database, and `firedAt`, `lastPrice` and
 `lastCheckedAt` are the poller's, written as it works. See
 [Worked example](#-worked-example-an-alert-end-to-end) for the full lifecycle
@@ -259,9 +264,30 @@ exists.
 | --- | --- | --- |
 | `GET /alerts` | 200 | Every alert, most recently created first |
 | `POST /alerts` | 201 | Created |
-| `POST /alerts` | 400 | Schema validation failed, or no delivery channel given |
+| `POST /alerts` | 400 | Schema validation failed, or the webhook URL was rejected |
 | `GET /alerts/:id` | 200 / 404 | The alert, or not found |
 | `DELETE /alerts/:id` | 204 / 404 | Deleted (empty body), or not found |
+
+### `GET /notifications`, `PATCH /notifications/:id/read`, `POST /notifications/read-all`
+
+One notification per alert firing, written in the same statement that sets the
+alert's `firedAt`, so a fired alert always has one. It copies the alert's
+symbol, direction and target, and keeps them if the alert is later deleted
+(`alertId` becomes `null`).
+
+```json
+{
+  "id": 1, "alertId": 1, "symbol": "PETR4", "direction": "below",
+  "targetPrice": 30, "price": 29.87, "readAt": null,
+  "createdAt": "2026-09-22T02:24:00.112Z"
+}
+```
+
+| Route | Status | Meaning |
+| --- | --- | --- |
+| `GET /notifications` | 200 | Newest first; `?unread=true`, `?limit=1..100` (default 50) |
+| `PATCH /notifications/:id/read` | 200 / 404 | The notification (an already-read one keeps its `readAt`), or not found |
+| `POST /notifications/read-all` | 200 | `{ "updated": n }`, how many were unread |
 
 ### `GET /healthz`
 
@@ -318,13 +344,10 @@ from `src/server.ts` when `ALERTS_POLLER_ENABLED` is on. Every
 
    The re-arm branch is what stops a price hovering on the target from
    notifying on every interval.
-5. Triggered alerts go to `src/services/notifier.ts`: a JSON `POST` to
-   `webhookUrl` and/or an email via `SMTP_URL`. A delivery failure is logged and
+5. A trigger writes an in-app notification in the same statement that sets
+   `fired_at` (`markAlertFired()`), then `src/services/notifier.ts` sends a JSON
+   `POST` to `webhookUrl` if the alert has one. A webhook failure is logged and
    swallowed — it never kills the cycle, and the interval always survives.
-
-`nodemailer` is imported lazily and is **not** in `package.json`, so the email
-channel throws `nodemailer is not installed` until you `yarn add nodemailer`.
-The webhook channel works out of the box.
 
 ## 🧪 Worked example: an alert end to end
 
@@ -451,8 +474,6 @@ you want to change. `.env.example` documents the full set.
 | `WEBHOOK_ALLOWED_SCHEMES` | `https` | Accepts `https` or `https:`; comma-separated |
 | `WEBHOOK_ALLOWED_HOSTS` | *(empty)* | When set, **only** these hosts are accepted, and they skip the private-range check |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Dev escape hatch — skips the private/loopback check |
-| `SMTP_URL` | *(none)* | Required for the email channel |
-| `EMAIL_FROM` | `stocktracker@localhost` | `From:` on alert mail |
 
 `JWT_SECRET` is the one variable with **no default**. Every other key falls back
 so the app boots out of the box; a signing secret that falls back is a signing
@@ -567,8 +588,7 @@ Every SQL statement is parameterized (`$n` throughout `src/repositories/`,
 including the `UNNEST($1::bigint[])` bulk update) — no injection path. Nothing
 builds SQL from request data; `COLUMNS` is a module constant. `SYMBOL_PATTERN` is
 anchored and enforced on every route that takes a ticker, and `brapi.ts` also
-applies `encodeURIComponent`. `format: 'email'` is enforced and admits no CR/LF,
-so there is no SMTP header injection. `src/db/migrate.ts` reads its schema path
+applies `encodeURIComponent`. `src/db/migrate.ts` reads its schema path
 from `import.meta.dirname`, never from input.
 
 ## 📜 Scripts
@@ -611,7 +631,8 @@ src/
                      listens, handles SIGTERM/SIGINT
   app.ts             buildApp() — Fastify instance, swagger, route registration
   config.ts          env parsing, all defaults
-  routes/            quotes.ts, health.ts, auth.ts, alerts.ts, watchlist.ts
+  routes/            quotes.ts, health.ts, auth.ts, alerts.ts, watchlist.ts,
+                     notifications.ts
                      (+ JSON schemas for docs & serialization)
   plugins/
     authenticate.ts  onRequest hook + ownerOf(), the only source of an owner id
@@ -620,8 +641,9 @@ src/
     quotes.ts        cache-aside orchestration over brapi.ts
     alerts.ts        evaluateAlert() — the pure trigger/rearm/noop rule
     auth.ts          scrypt password hashing (token signing is @fastify/jwt)
-    notifier.ts      webhook + email delivery
-  repositories/      alerts.ts, watchlists.ts, users.ts — all SQL lives here
+    notifier.ts      webhook delivery
+  repositories/      alerts.ts, watchlists.ts, users.ts, notifications.ts —
+                     all SQL lives here
   workers/
     alertPoller.ts   in-process interval, advisory-locked
   redis/redis.ts     singleton client with reconnect strategy

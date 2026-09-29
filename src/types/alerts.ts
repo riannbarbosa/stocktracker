@@ -6,7 +6,6 @@ export interface Alert {
   direction: AlertDirection;
   targetPrice: number;
   webhookUrl: string | null;
-  email: string | null;
   active: boolean;
   firedAt: string | null;
   lastPrice: number | null;
@@ -20,7 +19,6 @@ export interface NewAlert {
   direction: AlertDirection;
   targetPrice: number;
   webhookUrl?: string | null;
-  email?: string | null;
 }
 
 export interface WatchlistItem {
