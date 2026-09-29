@@ -60,9 +60,6 @@ docker-uninstall-dnf:
 up:
 	docker compose up --build -d
 
-# Kept as an alias so `make build` still works.
-build: up
-
 start:
 	docker compose start	
 
