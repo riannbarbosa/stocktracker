@@ -7,12 +7,17 @@
 ![Postgres](https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-7-FF4438?logo=redis&logoColor=white)
 
-REST API serving B3 (Brazilian stock exchange) quotes, fetched from
-[brapi.dev](https://brapi.dev) and cached in Redis, plus a watchlist and price
-alerts stored in Postgres and delivered by webhook or email.
+REST API for B3 (Brazilian stock exchange) quotes, fetched from
+[brapi.dev](https://brapi.dev) and cached in Redis. Each account gets:
+
+- a **watchlist** of tickers;
+- **price alerts** that land as in-app notifications, and optionally a webhook;
+- an opt-in **email summary** of the watchlist, daily, weekly or monthly.
 
 Built with Fastify 5 on Node 22, running the TypeScript sources directly via
 native type stripping — there is no build step.
+
+![stocktracker-api structure map: the api container with its routes, services, repositories and workers, Redis and Postgres in docker compose, and brapi.dev, webhooks and SMTP outside it](docs/structure-map.png)
 
 ## 📑 Contents
 
@@ -21,12 +26,14 @@ native type stripping — there is no build step.
 - [📡 Endpoints](#-endpoints)
 - [💹 How a quote is resolved](#-how-a-quote-is-resolved)
 - [🔔 How an alert fires](#-how-an-alert-fires)
+- [📬 How the watchlist summary is sent](#-how-the-watchlist-summary-is-sent)
 - [🧪 Worked example: an alert end to end](#-worked-example-an-alert-end-to-end)
 - [⚙️ Configuration](#-configuration)
 - [🔒 Security posture](#-security-posture)
 - [📜 Scripts](#-scripts)
 - [🐳 Make targets](#-make-targets)
 - [🗂️ Project layout](#-project-layout)
+- [📄 License](#-license)
 
 ## 🧱 Stack
 
@@ -35,8 +42,9 @@ native type stripping — there is no build step.
 | Runtime | Node 22 (native `.ts` type stripping, no transpile step) |
 | Framework | Fastify 5 + `@fastify/swagger` / `swagger-ui` |
 | Cache | Redis 7 (`redis` v6 client) |  
-| Database | Postgres 16 (`pg` pool) — alerts, watchlist, schema applied on boot |
+| Database | Postgres 16 (`pg` pool) — users, watchlist, alerts, notifications, summary prices; schema applied on boot |
 | Upstream | brapi.dev |
+| Email | `nodemailer` over SMTP — watchlist summary only |
 | Package manager | Yarn 4 (PnP locally, node-modules in the image) |
 | Tests | `node --test` |
 
@@ -45,12 +53,33 @@ native type stripping — there is no build step.
 ### Docker (recommended)
 
 ```bash
-cp .env.example .env    # then edit if you have a brapi token
+cp .env.example .env
+# JWT_SECRET is required; the API will not start without it
+sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
 make up                 # docker compose up --build -d
 ```
 
 The API listens on `http://localhost:3000`, Swagger UI on
-`http://localhost:3000/docs`.
+`http://localhost:3000/docs`. Adding a `BRAPI_TOKEN` to `.env` is optional but
+avoids brapi's free-tier rate limit.
+
+### First requests
+
+Most routes need a token. Register once and keep the token in a shell variable:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:3000/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"a-long-enough-password"}' \
+  | sed 's/.*"token":"\([^"]*\)".*/\1/')
+
+curl http://localhost:3000/quotes/PETR4                          # public
+curl http://localhost:3000/watchlist -H "authorization: Bearer $TOKEN"
+```
+
+Tokens expire after an hour (`JWT_TTL_SECONDS`); call `/auth/login` with the
+same body to get a new one. In Swagger UI, paste the token into **Authorize**.
+The examples below assume `$TOKEN` is set.
 
 If Docker isn't installed, `make docker-install` handles it on Debian/Ubuntu
 (apt) and Fedora (dnf).
@@ -67,7 +96,8 @@ cp .env.example .env
 
 Then point `.env` at localhost (`REDIS_URL=redis://localhost:6379`,
 `DATABASE_URL=postgres://postgres:postgres@localhost:5433/stocktracker` — note
-port **5433**, which is what compose publishes) and run:
+port **5433**, which is what compose publishes), set `JWT_SECRET` as above, and
+run:
 
 ```bash
 yarn install
@@ -103,6 +133,11 @@ yarn dev        # watch mode
 | 🔒 | `POST` | `/alerts` | Create a price alert |
 | 🔒 | `GET` | `/alerts/:id` | One alert |
 | 🔒 | `DELETE` | `/alerts/:id` | Delete one |
+| 🔒 | `GET` | `/notifications` | Alert firings, newest first (`?unread=true`) |
+| 🔒 | `PATCH` | `/notifications/:id/read` | Mark one read |
+| 🔒 | `POST` | `/notifications/read-all` | Mark all read |
+| 🔒 | `GET` | `/account/digest` | Your watchlist summary settings |
+| 🔒 | `PUT` | `/account/digest` | Set the summary frequency |
 | 🔓 | `GET` | `/healthz` · `/readyz` | Liveness · readiness |
 | 🔓 | `GET` | `/docs` | Swagger UI (spec at `/docs/json`) |
 
@@ -148,9 +183,9 @@ the value.
 
 ### `POST /auth/register`, `POST /auth/login`
 
-`/quotes` and the health probes are public. `/watchlist` and `/alerts` are not:
-they need `Authorization: Bearer <token>`, and every row they touch belongs to
-the user in that token.
+`/quotes`, `/docs` and the health probes are public. Everything marked 🔒 in
+the table above needs `Authorization: Bearer <token>`, and every row it touches
+belongs to the user in that token.
 
 ```bash
 curl -X POST http://localhost:3000/auth/register \
@@ -199,10 +234,10 @@ same path — see [Security posture](#-security-posture) for how it works.
 Tickers tracked by the authenticated user.
 
 ```bash
-curl -X POST http://localhost:3000/watchlist \
+curl -X POST http://localhost:3000/watchlist -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' -d '{"symbol":"petr4"}'
-curl http://localhost:3000/watchlist
-curl -X DELETE http://localhost:3000/watchlist/PETR4
+curl http://localhost:3000/watchlist -H "authorization: Bearer $TOKEN"
+curl -X DELETE http://localhost:3000/watchlist/PETR4 -H "authorization: Bearer $TOKEN"
 ```
 
 ```json
@@ -223,11 +258,12 @@ returns the existing row rather than erroring.
 ### `GET /alerts`, `POST /alerts`, `GET /alerts/:id`, `DELETE /alerts/:id`
 
 Price alerts. Each one names a ticker, a `direction` (`above` / `below`), a
-`targetPrice`, and at least one delivery channel — `webhookUrl`, `email`, or
-both. A request with neither is rejected with 400.
+`targetPrice`, and an optional `webhookUrl`. Every firing creates an in-app
+notification (see [`/notifications`](#get-notifications-patch-notificationsidread-post-notificationsread-all));
+the webhook, when set, is POSTed to as well.
 
 ```bash
-curl -X POST http://localhost:3000/alerts \
+curl -X POST http://localhost:3000/alerts -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"symbol":"PETR4","direction":"below","targetPrice":30,
        "webhookUrl":"https://hooks.example.test/petr4"}'
@@ -236,7 +272,7 @@ curl -X POST http://localhost:3000/alerts \
 ```json
 {
   "id": 1, "symbol": "PETR4", "direction": "below", "targetPrice": 30,
-  "webhookUrl": "https://hooks.example.test/petr4", "email": null,
+  "webhookUrl": "https://hooks.example.test/petr4",
   "active": true, "firedAt": null, "lastPrice": null, "lastCheckedAt": null,
   "createdAt": "2026-09-22T02:22:28.381Z", "updatedAt": "2026-09-22T02:22:28.381Z"
 }
@@ -245,7 +281,7 @@ curl -X POST http://localhost:3000/alerts \
 Read that as **"tell me when PETR4 drops to 30 or below"**. That request is the
 whole job — you do not poll, acknowledge or close anything afterwards.
 
-Of the twelve fields that come back, you send four. `id`, `active`, `createdAt`
+Of the eleven fields that come back, you send four. `id`, `active`, `createdAt`
 and `updatedAt` come from the database, and `firedAt`, `lastPrice` and
 `lastCheckedAt` are the poller's, written as it works. See
 [Worked example](#-worked-example-an-alert-end-to-end) for the full lifecycle
@@ -259,9 +295,54 @@ exists.
 | --- | --- | --- |
 | `GET /alerts` | 200 | Every alert, most recently created first |
 | `POST /alerts` | 201 | Created |
-| `POST /alerts` | 400 | Schema validation failed, or no delivery channel given |
+| `POST /alerts` | 400 | Schema validation failed, or the webhook URL was rejected |
 | `GET /alerts/:id` | 200 / 404 | The alert, or not found |
 | `DELETE /alerts/:id` | 204 / 404 | Deleted (empty body), or not found |
+
+### `GET /notifications`, `PATCH /notifications/:id/read`, `POST /notifications/read-all`
+
+One notification per alert firing, written in the same statement that sets the
+alert's `firedAt`, so a fired alert always has one. It copies the alert's
+symbol, direction and target, and keeps them if the alert is later deleted
+(`alertId` becomes `null`).
+
+```json
+{
+  "id": 1, "alertId": 1, "symbol": "PETR4", "direction": "below",
+  "targetPrice": 30, "price": 29.87, "readAt": null,
+  "createdAt": "2026-09-22T02:24:00.112Z"
+}
+```
+
+| Route | Status | Meaning |
+| --- | --- | --- |
+| `GET /notifications` | 200 | Newest first; `?unread=true`, `?limit=1..100` (default 50) |
+| `PATCH /notifications/:id/read` | 200 / 404 | The notification (an already-read one keeps its `readAt`), or not found |
+| `POST /notifications/read-all` | 200 | `{ "updated": n }`, how many were unread |
+
+### `GET /account/digest`, `PUT /account/digest`
+
+How often the watchlist summary is emailed to the account address. Every
+account starts at `off`.
+
+```bash
+curl -X PUT http://localhost:3000/account/digest \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"frequency":"weekly"}'
+```
+
+```json
+{ "frequency": "weekly", "lastSentAt": null }
+```
+
+| Route | Status | Meaning |
+| --- | --- | --- |
+| `GET /account/digest` | 200 | `frequency` (`off` · `daily` · `weekly` · `monthly`) and `lastSentAt` |
+| `PUT /account/digest` | 200 | Saved; the body is the new settings |
+| `PUT /account/digest` | 400 | Unknown frequency or extra properties |
+
+See [How the watchlist summary is sent](#-how-the-watchlist-summary-is-sent)
+for when it actually goes out.
 
 ### `GET /healthz`
 
@@ -318,13 +399,59 @@ from `src/server.ts` when `ALERTS_POLLER_ENABLED` is on. Every
 
    The re-arm branch is what stops a price hovering on the target from
    notifying on every interval.
-5. Triggered alerts go to `src/services/notifier.ts`: a JSON `POST` to
-   `webhookUrl` and/or an email via `SMTP_URL`. A delivery failure is logged and
+5. A trigger writes an in-app notification in the same statement that sets
+   `fired_at` (`markAlertFired()`), then `src/services/notifier.ts` sends a JSON
+   `POST` to `webhookUrl` if the alert has one. A webhook failure is logged and
    swallowed — it never kills the cycle, and the interval always survives.
 
-`nodemailer` is imported lazily and is **not** in `package.json`, so the email
-channel throws `nodemailer is not installed` until you `yarn add nodemailer`.
-The webhook channel works out of the box.
+## 📬 How the watchlist summary is sent
+
+Alerts are for "tell me the moment X happens"; the summary is for "how did my
+watchlist do". `src/workers/digestWorker.ts` runs in the API process next to
+the alert poller, every `DIGEST_CHECK_INTERVAL_MS` (15 minutes by default).
+
+1. **Advisory lock** on its own key (`DIGEST_LOCK_KEY`), so replicas never send
+   the same summary twice and it never blocks the alert poller.
+2. **Who is due** is decided by `isDigestDue()` (`src/services/digest.ts`),
+   pure like `evaluateAlert()`. Nothing goes out before `DIGEST_SEND_HOUR` in
+   `DIGEST_TIME_ZONE` (18:00 São Paulo, after the B3 close). After that:
+
+   | Frequency | Due when the last summary went out… |
+   | --- | --- |
+   | `daily` | on an earlier local day |
+   | `weekly` | 7 or more local days ago |
+   | `monthly` | in an earlier month |
+
+   It compares **local calendar dates**, not elapsed hours: 01:00 UTC on the
+   28th is still the 27th in São Paulo, and a send at 18:40 does not push the
+   next one to 18:40.
+3. **The email** lists every watchlist ticker with its current price and the
+   change since the previous summary. That baseline lives in `digest_prices`,
+   one row per owner and ticker. A ticker's first summary shows `new`; one
+   whose quote failed shows `price unavailable` and keeps its old baseline.
+
+   ```
+   Your weekly watchlist summary
+
+   PETR4        48.72  +2.31%
+   VALE3        71.16  -0.84%
+   ITUB4        33.10  new
+   ```
+
+4. **After sending**, `recordDigestSent()` stores `digest_last_sent_at` and the
+   new baseline in one statement, using the worker's clock so the next due
+   check reads the same time it wrote.
+
+Failures are per user. A bad address or a quote outage is logged as
+`digest failed` and the rest still go out; nothing is recorded, so the next
+check retries. An empty watchlist sends nothing and records nothing, so the
+summary starts as soon as a ticker is added.
+
+Without `SMTP_URL` every send fails with `SMTP_URL is not configured`. For local
+testing, run [Mailpit](https://mailpit.axllent.org)
+(`docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit`), set
+`SMTP_URL=smtp://localhost:1025` (or the host's address from inside compose),
+and read the mail at `http://localhost:8025`.
 
 ## 🧪 Worked example: an alert end to end
 
@@ -346,7 +473,8 @@ WEBHOOK_ALLOW_PRIVATE=true WEBHOOK_ALLOWED_SCHEMES=https,http yarn dev
 satisfied and fires on the next cycle:
 
 ```bash
-curl -X POST http://localhost:3000/alerts -H 'content-type: application/json' \
+curl -X POST http://localhost:3000/alerts -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
   -d '{"symbol":"PETR4","direction":"below","targetPrice":50,
        "webhookUrl":"http://localhost:3099/hook"}'
 ```
@@ -356,8 +484,9 @@ curl -X POST http://localhost:3000/alerts -H 'content-type: application/json' \
   "active": true, "firedAt": null, "lastPrice": null, "lastCheckedAt": null }
 ```
 
-**2. It fires**, 2.3 seconds later. What arrives at the webhook is an event, not
-the alert row:
+**2. It fires**, 2.3 seconds later. A notification appears in
+`GET /notifications`, and the webhook receives an event rather than the alert
+row:
 
 ```
 [03:27:03] {"event":"alert.triggered","alertId":6,"symbol":"PETR4",
@@ -412,9 +541,11 @@ escape hatch needed, since the destination is public:
 
 ```bash
 curl http://localhost:3000/quotes/PETR4          # pick a target that will fire
-curl -X POST http://localhost:3000/alerts -H 'content-type: application/json' \
+curl -X POST http://localhost:3000/alerts -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
   -d '{"symbol":"PETR4","direction":"below","targetPrice":999,"webhookUrl":"https://webhook.site/YOUR-ID"}'
-curl http://localhost:3000/alerts                # watch firedAt/lastPrice fill in
+curl http://localhost:3000/alerts -H "authorization: Bearer $TOKEN"          # firedAt fills in
+curl http://localhost:3000/notifications -H "authorization: Bearer $TOKEN"   # and a notification appears
 ```
 
 Pinning the cached price by hand, as in step 4 above, is how you force a re-arm
@@ -447,12 +578,17 @@ you want to change. `.env.example` documents the full set.
 | `ALERTS_LOCK_KEY` | `alerts_poller_lock` | Folded into a bigint for `pg_try_advisory_lock` |
 | `WEBHOOK_TIMEOUT_MS` | `5000` | Per-delivery `AbortSignal.timeout` |
 | `JWT_SECRET` | **none** | Required. The boot throws without it — see below |
-| `JWT_TTL_SECONDS` | `3600` | Token lifetime; there is no revocation, so keep it short |
+| `JWT_TTL_SECONDS` | `3600` | Token lifetime. `POST /auth/logout-all` revokes early |
 | `WEBHOOK_ALLOWED_SCHEMES` | `https` | Accepts `https` or `https:`; comma-separated |
 | `WEBHOOK_ALLOWED_HOSTS` | *(empty)* | When set, **only** these hosts are accepted, and they skip the private-range check |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Dev escape hatch — skips the private/loopback check |
-| `SMTP_URL` | *(none)* | Required for the email channel |
-| `EMAIL_FROM` | `stocktracker@localhost` | `From:` on alert mail |
+| `DIGEST_ENABLED` | `true` | Set `false` to run the API without the summary worker |
+| `DIGEST_SEND_HOUR` | `18` | Local hour (1–23) from which summaries go out; `0` falls back to 18 |
+| `DIGEST_TIME_ZONE` | `America/Sao_Paulo` | IANA zone for the hour and the calendar |
+| `DIGEST_CHECK_INTERVAL_MS` | `900000` | How often the worker looks for due summaries |
+| `DIGEST_LOCK_KEY` | `digest_worker_lock` | Folded into a bigint for `pg_try_advisory_lock` |
+| `SMTP_URL` | *(none)* | e.g. `smtp://user:pass@host:587`; required for the summary |
+| `EMAIL_FROM` | `stocktracker@localhost` | `From:` on summary mail |
 
 `JWT_SECRET` is the one variable with **no default**. Every other key falls back
 so the app boots out of the box; a signing secret that falls back is a signing
@@ -473,8 +609,8 @@ the one `.env.example` lists) is not read by anything.
 
 ## 🔒 Security posture
 
-Reviewed on this branch. One real finding, two things that are posture rather
-than bugs — worth knowing before exposing this to anything but localhost.
+What to know before exposing this to anything but localhost: one fixed
+finding, one residual risk, and one robustness gap.
 
 ### ✅ Webhook destinations are validated (SSRF, fixed)
 
@@ -510,24 +646,25 @@ validated address with a custom undici dispatcher, which is not implemented.
 
 ### ✅ Authentication and per-user scoping
 
-`/quotes` and the health probes are public. `/watchlist` and `/alerts` sit
+`/quotes`, `/docs` and the health probes are public. Every other route sits
 inside a Fastify plugin that registers the `onRequest` hook from
 `src/plugins/authenticate.ts`, so **a route added inside that scope is protected
-by default** — there is no per-route flag to forget.
+by default** — there is no per-route flag to forget. The same scope adds
+"(Requires Auth)" to each route's summary in Swagger.
 
 The owner never comes from the request body. It is read from the verified token
 by `ownerOf()`, which throws if a route somehow ends up outside the
 authenticated scope, turning a wiring mistake into a loud failure instead of a
 silently undefined owner reaching the SQL. Every HTTP-facing query in
-`repositories/alerts.ts` and `repositories/watchlists.ts` carries
-`WHERE owner_id = $n`, and a miss returns 404 rather than 403 so ids cannot be
-enumerated.
+`src/repositories/` carries `WHERE owner_id = $n` (or `WHERE id = $n` on
+`users`), and a miss returns 404 rather than 403 so ids cannot be enumerated.
 
-The poller's queries — `listActiveAlerts`, `markAlertFired`,
-`markAlertRearmed`, `touchAlerts` — are deliberately **not** scoped: it runs
-in-process with no user in context and has to see every alert. Scoping them by
-mistake would stop every alert from ever firing, and the poller's own `catch`
-would swallow the error.
+The two workers' queries — `listActiveAlerts`, `markAlertFired`,
+`markAlertRearmed`, `touchAlerts`, and `listDigestRecipients`,
+`listDigestWatchlist`, `recordDigestSent` — are deliberately **not** scoped to a
+request: they run in-process with no user in context. Scoping the poller's by
+mistake would stop every alert from ever firing, and its own `catch` would
+swallow the error.
 
 **Revocation.** A signature alone cannot be revoked, which is inherent to
 stateless JWT rather than a bug — but the consequence is real, so it is closed
@@ -567,15 +704,13 @@ Every SQL statement is parameterized (`$n` throughout `src/repositories/`,
 including the `UNNEST($1::bigint[])` bulk update) — no injection path. Nothing
 builds SQL from request data; `COLUMNS` is a module constant. `SYMBOL_PATTERN` is
 anchored and enforced on every route that takes a ticker, and `brapi.ts` also
-applies `encodeURIComponent`. `format: 'email'` is enforced and admits no CR/LF,
-so there is no SMTP header injection. `src/db/migrate.ts` reads its schema path
+applies `encodeURIComponent`. `src/db/migrate.ts` reads its schema path
 from `import.meta.dirname`, never from input.
 
 ## 📜 Scripts
 
 CI runs `typecheck`, `lint` and `test` on every push and pull request
-(`.github/workflows/ci.yml`). It needs no services — the suite stubs `fetch`,
-Redis and the pg pool — and `yarn install --immutable` fails the run if
+(`.github/workflows/ci.yml`). `yarn install --immutable` fails the run if
 `yarn.lock` was not committed alongside a dependency change.
 
 ```bash
@@ -597,7 +732,7 @@ including the route tests, which drive the real Fastify instance through
 
 | Target | What it does |
 | --- | --- |
-| `make up` (alias `make build`) | `docker compose up --build -d` |
+| `make up` | `docker compose up --build -d` |
 | `make start` | Start existing containers |
 | `make down` | `down -v` — removes the Postgres volume |
 | `make nuke` | `down -v --rmi all --remove-orphans` |
@@ -607,11 +742,12 @@ including the route tests, which drive the real Fastify instance through
 
 ```
 src/
-  server.ts          entrypoint: migrates, connects Redis, starts the poller,
-                     listens, handles SIGTERM/SIGINT
+  server.ts          entrypoint: migrates, connects Redis, starts the poller
+                     and the digest worker, listens, handles SIGTERM/SIGINT
   app.ts             buildApp() — Fastify instance, swagger, route registration
   config.ts          env parsing, all defaults
-  routes/            quotes.ts, health.ts, auth.ts, alerts.ts, watchlist.ts
+  routes/            quotes.ts, health.ts, auth.ts, alerts.ts, watchlist.ts,
+                     notifications.ts, digest.ts
                      (+ JSON schemas for docs & serialization)
   plugins/
     authenticate.ts  onRequest hook + ownerOf(), the only source of an owner id
@@ -620,32 +756,45 @@ src/
     quotes.ts        cache-aside orchestration over brapi.ts
     alerts.ts        evaluateAlert() — the pure trigger/rearm/noop rule
     auth.ts          scrypt password hashing (token signing is @fastify/jwt)
-    notifier.ts      webhook + email delivery
-  repositories/      alerts.ts, watchlists.ts, users.ts — all SQL lives here
+    notifier.ts      webhook delivery
+    digest.ts        isDigestDue() + buildDigestEmail() — pure, no I/O
+    mailer.ts        nodemailer transport, created on first send
+  repositories/      alerts.ts, watchlists.ts, users.ts, notifications.ts,
+                     digest.ts — all SQL lives here
   workers/
     alertPoller.ts   in-process interval, advisory-locked
+    digestWorker.ts  summary emails, same pattern with its own lock
   redis/redis.ts     singleton client with reconnect strategy
   db/
     pool.ts          pg pool + pingDatabase()
     migrate.ts       waits for Postgres, applies schema.sql on boot
-    schema.sql       idempotent DDL: users + watchlist + alerts
+    schema.sql       idempotent DDL: users, watchlist, alerts, notifications,
+                     digest_prices
   lib/symbols.ts     ticker regex, normalization
-  types/             brapi.ts, alerts.ts — upstream + normalized shapes
+  types/             brapi.ts, alerts.ts, notifications.ts, digest.ts
 tests/
-  services/          brapi, quotes, alerts, notifier, auth
+  services/          brapi, quotes, alerts, notifier, auth, digest
   repositories/      watchlists
-  routes/            auth, watchlist (through app.inject)
-  workers/           alertPoller
+  routes/            auth, watchlist, notifications, digest (through app.inject)
+  workers/           alertPoller, digestWorker
   helpers/           fetch stub, fake redis, fake pg pool
 docs/
-  structure-map.excalidraw   architecture map (open at excalidraw.com)
+  structure-map.png          architecture map shown at the top of this README
 ```
 
 Note the split: **`repositories/` owns every SQL statement**, routes own
 validation and status codes, and `services/` holds logic with no SQL in it.
-`evaluateAlert()` is deliberately pure so the alert rule can be tested without a
-database or a market feed.
+`evaluateAlert()` and `isDigestDue()` are deliberately pure so the alert rule
+and the summary schedule can be tested without a database or a market feed.
 
 Response schemas in `src/routes/` double as Fastify's serializer — **a field
 missing from the schema is silently dropped from the payload**, so adding a
 field to `StockQuote` means adding it in `src/routes/quotes.ts` too.
+
+## 📄 License
+
+Released under the [MIT License](LICENSE). Copyright © 2026 Rian Barbosa.
+
+You can use, copy, modify and distribute this code, including commercially, as
+long as the copyright notice and the license text stay with it. It comes with no
+warranty.

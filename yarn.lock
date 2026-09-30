@@ -355,6 +355,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/nodemailer@npm:^8.0.2":
+  version: 8.0.2
+  resolution: "@types/nodemailer@npm:8.0.2"
+  dependencies:
+    "@types/node": "npm:*"
+  checksum: 10c0/1ad3f83ac130cf9af65ce9eb7985b08b27b4723316c2be621522effc31c63d7d2d76880815490499fbe8b1aff3da889d24b54b3db892526d1166b12702404ff0
+  languageName: node
+  linkType: hard
+
 "@types/pg@npm:^8.23.1":
   version: 8.23.1
   resolution: "@types/pg@npm:8.23.1"
@@ -1295,6 +1304,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"nodemailer@npm:^10.0.12":
+  version: 10.0.12
+  resolution: "nodemailer@npm:10.0.12"
+  checksum: 10c0/1d816272d9b611f3dde6b9b25cb69a54dba558cc4655b60c620d96fee6bedda3c30ae1c002a30c6e45690559324f06a35b7e585d18ae64c303dc2eebc5e6a184
+  languageName: node
+  linkType: hard
+
 "obliterator@npm:^2.0.4":
   version: 2.0.5
   resolution: "obliterator@npm:2.0.5"
@@ -1740,11 +1756,13 @@ __metadata:
     "@fastify/swagger": "npm:^9.8.1"
     "@fastify/swagger-ui": "npm:^6.1.1"
     "@types/node": "npm:^26.1.1"
+    "@types/nodemailer": "npm:^8.0.2"
     "@types/pg": "npm:^8.23.1"
     eslint: "npm:^10.7.0"
     fastify: "npm:^5.10.0"
     globals: "npm:^17.7.0"
     jiti: "npm:^2.7.0"
+    nodemailer: "npm:^10.0.12"
     pg: "npm:^8.23.0"
     redis: "npm:^6.2.1"
     typescript: "npm:5"

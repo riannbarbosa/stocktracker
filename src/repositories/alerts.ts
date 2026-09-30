@@ -7,7 +7,6 @@ interface AlertRow {
   direction: string;
   target_price: number;
   webhook_url: string | null;
-  email: string | null;
   active: boolean;
   fired_at: Date | null;
   last_price: number | null;
@@ -22,7 +21,6 @@ function toAlert(row: AlertRow): Alert {
         symbol: row.symbol,
         direction: row.direction === 'below' ? 'below' : 'above',
         targetPrice: Number(row.target_price),
-        email: row.email,
         webhookUrl: row.webhook_url,
         active: row.active,
         firedAt: row.fired_at?.toISOString() ?? null,
@@ -33,7 +31,7 @@ function toAlert(row: AlertRow): Alert {
     };
 }
 
-const COLUMNS = `id, symbol, direction, target_price, webhook_url, email, active,
+const COLUMNS = `id, symbol, direction, target_price, webhook_url, active,
                  fired_at, last_price, last_checked_at, created_at, updated_at`;
 
 /* The four functions below serve HTTP requests and are scoped to one owner.
@@ -61,15 +59,14 @@ export async function findAlert(id: number, ownerId: number): Promise<Alert | nu
 
 export async function createAlert(input: NewAlert, ownerId: number): Promise<Alert> {
   const { rows } = await pool.query<AlertRow>(
-    `INSERT INTO alerts (symbol, direction, target_price, webhook_url, email, owner_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO alerts (symbol, direction, target_price, webhook_url, owner_id)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING ${COLUMNS}`,
     [
       input.symbol.toUpperCase(),
       input.direction,
       input.targetPrice,
       input.webhookUrl ?? null,
-      input.email ?? null,
       ownerId,
     ],
   );
@@ -97,11 +94,20 @@ export async function listActiveAlerts(limit: number): Promise<Alert[]> {
   return rows.map(toAlert);
 }
 
+/* Firing and the in-app notification are one statement, so an alert can never
+ * be latched as fired without its owner hearing about it. A legacy alert with
+ * no owner still fires; there is just no one to notify in-app. */
 export async function markAlertFired(id: number, price: number): Promise<void> {
   await pool.query(
-    `UPDATE alerts
-     SET fired_at = now(), last_price = $2, last_checked_at = now(), updated_at = now()
-     WHERE id = $1`,
+    `WITH fired AS (
+       UPDATE alerts
+       SET fired_at = now(), last_price = $2, last_checked_at = now(), updated_at = now()
+       WHERE id = $1
+       RETURNING id, owner_id, symbol, direction, target_price
+     )
+     INSERT INTO notifications (owner_id, alert_id, symbol, direction, target_price, price)
+     SELECT owner_id, id, symbol, direction, target_price, $2 FROM fired
+     WHERE owner_id IS NOT NULL`,
     [id, price],
   );
 }

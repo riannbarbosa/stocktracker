@@ -19,7 +19,6 @@ function alertRow(overrides: Record<string, unknown> = {}) {
     direction: 'above',
     target_price: '30',
     webhook_url: WEBHOOK,
-    email: null,
     active: true,
     fired_at: null,
     last_price: null,
@@ -144,6 +143,25 @@ describe('workers/alertPoller', () => {
 
       const delivered = http.calls.filter((call) => call.url === WEBHOOK);
       assert.equal(delivered.length, 1);
+    });
+
+    it('writes the in-app notification in the same statement that latches it', async () => {
+      wire(pg, http, { price: 31 });
+
+      await createAlertPoller(silentLogger().logger).runOnce();
+
+      const update = queryMatching(pg.queries, 'fired_at = now()');
+      assert.ok(update);
+      assert.match(update.sql, /INSERT INTO notifications/, 'a fired alert could otherwise leave no notification');
+    });
+
+    it('still fires an alert that has no webhook', async () => {
+      wire(pg, http, { rows: [alertRow({ webhook_url: null })], price: 31 });
+
+      await createAlertPoller(silentLogger().logger).runOnce();
+
+      assert.ok(queryMatching(pg.queries, 'INSERT INTO notifications'));
+      assert.equal(http.calls.filter((call) => !call.url.startsWith(config.brapi.baseUrl)).length, 0);
     });
   });
 

@@ -4,6 +4,7 @@ import { connectRedis, disconnectRedis } from './redis/redis.ts';
 import { closeDatabase } from './db/pool.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { createAlertPoller } from './workers/alertPoller.ts';
+import { createDigestWorker } from './workers/digestWorker.ts';
 
 const app = await buildApp();
 
@@ -25,6 +26,13 @@ if (config.alerts.pollerEnabled) {
   app.log.info({}, 'alert poller disabled');
 }
 
+const digestWorker = createDigestWorker(app.log);
+if (config.digest.enabled) {
+  digestWorker.start();
+} else {
+  app.log.info({}, 'digest worker disabled');
+}
+
 let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
@@ -34,6 +42,7 @@ async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   try {
     await poller.stop();
+    await digestWorker.stop();
     await app.close();
     await disconnectRedis();
     await closeDatabase();

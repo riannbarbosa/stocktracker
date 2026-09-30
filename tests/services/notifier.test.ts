@@ -36,7 +36,6 @@ function alert(overrides: Partial<Alert> = {}): Alert {
     direction: 'above',
     targetPrice: 30,
     webhookUrl: null,
-    email: null,
     active: true,
     firedAt: null,
     lastPrice: null,
@@ -56,7 +55,6 @@ describe('services/notifier', () => {
      * otherwise reject. */
     Object.assign(config.notifications, {
       webhookTimeoutMs: 1000,
-      smtpUrl: null,
       webhookAllowedHosts: ['hooks.test'],
     });
     http = stubFetch();
@@ -102,7 +100,7 @@ describe('services/notifier', () => {
 
       assert.equal(error.length, 1);
       assert.match(String((error[0]?.obj as { err?: unknown }).err), /500/);
-      assert.equal(info.length, 1, 'delivery is still reported as attempted');
+      assert.equal(info.length, 0, 'a failed delivery is not reported as delivered');
     });
 
     it('does not throw when the request itself fails', async () => {
@@ -118,28 +116,16 @@ describe('services/notifier', () => {
     });
   });
 
-  describe('email delivery', () => {
-    it('reports a misconfigured SMTP url instead of throwing', async () => {
-      config.notifications.smtpUrl = null;
-      const { logger, error } = recordingLogger();
-
-      await notifyAlert(alert({ email: 'trader@example.test' }), 31, logger);
-
-      assert.equal(http.calls.length, 0, 'no webhook is attempted');
-      assert.equal(error.length, 1);
-      assert.match(String((error[0]?.obj as { err?: unknown }).err), /SMTP/i);
-    });
-  });
-
-  describe('no channel', () => {
-    it('warns and sends nothing when the alert has neither channel', async () => {
-      const { logger, warn, info } = recordingLogger();
+  describe('no webhook', () => {
+    /* The in-app notification is written by markAlertFired(), so an alert
+     * without a webhook is the normal case, not a misconfiguration. */
+    it('sends and logs nothing', async () => {
+      const { logger, warn, info, error } = recordingLogger();
 
       await notifyAlert(alert(), 31, logger);
 
       assert.equal(http.calls.length, 0);
-      assert.equal(warn.length, 1);
-      assert.equal(info.length, 0, 'nothing was delivered, so nothing is reported as notified');
+      assert.equal(warn.length + info.length + error.length, 0);
     });
   });
 });

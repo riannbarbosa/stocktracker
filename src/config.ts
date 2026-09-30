@@ -94,8 +94,17 @@ export const config = {
     webhookSchemes: schemes(process.env.WEBHOOK_ALLOWED_SCHEMES, ['https']),
     webhookAllowedHosts: list(process.env.WEBHOOK_ALLOWED_HOSTS, []),
     webhookAllowPrivate: bool(process.env.WEBHOOK_ALLOW_PRIVATE, false),
-    smtpUrl: process.env.SMTP_URL ?? null,
-    emailFrom: process.env.EMAIL_FROM ?? 'stocktracker@localhost',
   },
-  quoteCacheTTL: Number(process.env.QUOTE_CACHE_TTL) ||  60 // 1 hour
+  quoteCacheTTL: Number(process.env.QUOTE_CACHE_TTL) ||  60,
+  digest: {
+    enabled: bool(process.env.DIGEST_ENABLED, true),
+    checkIntervalMS:  num(process.env.DIGEST_CHECK_INTERVAL_MS, 15 * 60 * 1000),
+    sendHour: num(process.env.DIGEST_SEND_HOUR, 18),
+    timeZone: process.env.DIGEST_TIME_ZONE ?? 'America/Sao_Paulo',
+    lockKey: lockKeyOf(process.env.DIGEST_LOCK_KEY, 'digest_worker_lock'),
+  },
+  mail: {
+    smtpUrl: process.env.SMTP_URL || null,
+    from: process.env.EMAIL_FROM ?? 'stocktracker@localhost',
+  }
 };
