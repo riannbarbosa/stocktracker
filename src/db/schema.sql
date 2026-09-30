@@ -70,3 +70,17 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 CREATE INDEX IF NOT EXISTS notifications_owner_created_idx ON notifications (owner_id, created_at DESC);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS digest_frequency TEXT NOT NULL DEFAULT 'off'
+  CHECK (digest_frequency IN ('off', 'daily', 'weekly', 'monthly'));
+ALTER TABLE users ADD COLUMN IF NOT EXISTS digest_last_sent_at TIMESTAMPTZ;
+
+-- Price of each ticker as of the owner's last summary; the next summary
+-- reports its change against this.
+CREATE TABLE IF NOT EXISTS digest_prices (
+  owner_id     BIGINT         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  symbol       TEXT           NOT NULL,
+  price        NUMERIC(18, 6) NOT NULL,
+  recorded_at  TIMESTAMPTZ    NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_id, symbol)
+);

@@ -11,6 +11,7 @@ import { accountRoutes, authRoutes } from './routes/auth.ts';
 import { alertRoutes } from './routes/alerts.ts';
 import { watchlistRoutes } from './routes/watchlist.ts'
 import { notificationRoutes } from './routes/notifications.ts';
+import { digestRoutes } from './routes/digest.ts';
 
 const REQUIRES_AUTH = 'Requires Auth';
 
@@ -39,6 +40,7 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
         { name: 'watchlist', description: 'Tickers tracked for an owner.' },
         { name: 'alerts', description: 'Price alerts evaluated by the background poller.' },
         { name: 'notifications', description: 'In-app notifications created when an alert fires.' },
+        { name: 'digest', description: 'Periodic watchlist summary sent by email.' },
         { name: 'health', description: 'Liveness and readiness probes.' },
         { name: 'auth', description: 'Account creation and token issue.' },
       ],
@@ -85,6 +87,7 @@ export async function buildApp(options: FastifyServerOptions = {}): Promise<Fast
     await secured.register(alertRoutes);
     await secured.register(watchlistRoutes);
     await secured.register(notificationRoutes);
+    await secured.register(digestRoutes);
   });
 
   return app; 

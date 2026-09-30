@@ -95,7 +95,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
   app.post('/auth/logout-all', {
     schema: {
       tags: ['auth'],
-      security: [{ bearerAuth: [] }],
+      security: [{ bearerAuth: [] }], 
       summary: 'Revoke every token issued to this account',
       description:
         'Increments the account token version, so every token signed before ' +
