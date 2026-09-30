@@ -7,11 +7,12 @@
 ![Postgres](https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-7-FF4438?logo=redis&logoColor=white)
 
-REST API serving B3 (Brazilian stock exchange) quotes, fetched from
-[brapi.dev](https://brapi.dev) and cached in Redis, plus a watchlist and price
-alerts stored in Postgres that land as in-app notifications (and, optionally,
-a webhook), plus an opt-in daily, weekly or monthly summary of the watchlist by
-email.
+REST API for B3 (Brazilian stock exchange) quotes, fetched from
+[brapi.dev](https://brapi.dev) and cached in Redis. Each account gets:
+
+- a **watchlist** of tickers;
+- **price alerts** that land as in-app notifications, and optionally a webhook;
+- an opt-in **email summary** of the watchlist, daily, weekly or monthly.
 
 Built with Fastify 5 on Node 22, running the TypeScript sources directly via
 native type stripping — there is no build step.
@@ -32,6 +33,7 @@ native type stripping — there is no build step.
 - [📜 Scripts](#-scripts)
 - [🐳 Make targets](#-make-targets)
 - [🗂️ Project layout](#-project-layout)
+- [📄 License](#-license)
 
 ## 🧱 Stack
 
@@ -40,7 +42,7 @@ native type stripping — there is no build step.
 | Runtime | Node 22 (native `.ts` type stripping, no transpile step) |
 | Framework | Fastify 5 + `@fastify/swagger` / `swagger-ui` |
 | Cache | Redis 7 (`redis` v6 client) |  
-| Database | Postgres 16 (`pg` pool) — alerts, watchlist, schema applied on boot |
+| Database | Postgres 16 (`pg` pool) — users, watchlist, alerts, notifications, summary prices; schema applied on boot |
 | Upstream | brapi.dev |
 | Email | `nodemailer` over SMTP — watchlist summary only |
 | Package manager | Yarn 4 (PnP locally, node-modules in the image) |
@@ -51,12 +53,33 @@ native type stripping — there is no build step.
 ### Docker (recommended)
 
 ```bash
-cp .env.example .env    # then edit if you have a brapi token
+cp .env.example .env
+# JWT_SECRET is required; the API will not start without it
+sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
 make up                 # docker compose up --build -d
 ```
 
 The API listens on `http://localhost:3000`, Swagger UI on
-`http://localhost:3000/docs`.
+`http://localhost:3000/docs`. Adding a `BRAPI_TOKEN` to `.env` is optional but
+avoids brapi's free-tier rate limit.
+
+### First requests
+
+Most routes need a token. Register once and keep the token in a shell variable:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:3000/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"a-long-enough-password"}' \
+  | sed 's/.*"token":"\([^"]*\)".*/\1/')
+
+curl http://localhost:3000/quotes/PETR4                          # public
+curl http://localhost:3000/watchlist -H "authorization: Bearer $TOKEN"
+```
+
+Tokens expire after an hour (`JWT_TTL_SECONDS`); call `/auth/login` with the
+same body to get a new one. In Swagger UI, paste the token into **Authorize**.
+The examples below assume `$TOKEN` is set.
 
 If Docker isn't installed, `make docker-install` handles it on Debian/Ubuntu
 (apt) and Fedora (dnf).
@@ -73,7 +96,8 @@ cp .env.example .env
 
 Then point `.env` at localhost (`REDIS_URL=redis://localhost:6379`,
 `DATABASE_URL=postgres://postgres:postgres@localhost:5433/stocktracker` — note
-port **5433**, which is what compose publishes) and run:
+port **5433**, which is what compose publishes), set `JWT_SECRET` as above, and
+run:
 
 ```bash
 yarn install
@@ -159,9 +183,9 @@ the value.
 
 ### `POST /auth/register`, `POST /auth/login`
 
-`/quotes` and the health probes are public. `/watchlist` and `/alerts` are not:
-they need `Authorization: Bearer <token>`, and every row they touch belongs to
-the user in that token.
+`/quotes`, `/docs` and the health probes are public. Everything marked 🔒 in
+the table above needs `Authorization: Bearer <token>`, and every row it touches
+belongs to the user in that token.
 
 ```bash
 curl -X POST http://localhost:3000/auth/register \
@@ -210,10 +234,10 @@ same path — see [Security posture](#-security-posture) for how it works.
 Tickers tracked by the authenticated user.
 
 ```bash
-curl -X POST http://localhost:3000/watchlist \
+curl -X POST http://localhost:3000/watchlist -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' -d '{"symbol":"petr4"}'
-curl http://localhost:3000/watchlist
-curl -X DELETE http://localhost:3000/watchlist/PETR4
+curl http://localhost:3000/watchlist -H "authorization: Bearer $TOKEN"
+curl -X DELETE http://localhost:3000/watchlist/PETR4 -H "authorization: Bearer $TOKEN"
 ```
 
 ```json
@@ -239,7 +263,7 @@ notification (see [`/notifications`](#get-notifications-patch-notificationsidrea
 the webhook, when set, is POSTed to as well.
 
 ```bash
-curl -X POST http://localhost:3000/alerts \
+curl -X POST http://localhost:3000/alerts -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"symbol":"PETR4","direction":"below","targetPrice":30,
        "webhookUrl":"https://hooks.example.test/petr4"}'
@@ -449,7 +473,8 @@ WEBHOOK_ALLOW_PRIVATE=true WEBHOOK_ALLOWED_SCHEMES=https,http yarn dev
 satisfied and fires on the next cycle:
 
 ```bash
-curl -X POST http://localhost:3000/alerts -H 'content-type: application/json' \
+curl -X POST http://localhost:3000/alerts -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
   -d '{"symbol":"PETR4","direction":"below","targetPrice":50,
        "webhookUrl":"http://localhost:3099/hook"}'
 ```
@@ -459,8 +484,9 @@ curl -X POST http://localhost:3000/alerts -H 'content-type: application/json' \
   "active": true, "firedAt": null, "lastPrice": null, "lastCheckedAt": null }
 ```
 
-**2. It fires**, 2.3 seconds later. What arrives at the webhook is an event, not
-the alert row:
+**2. It fires**, 2.3 seconds later. A notification appears in
+`GET /notifications`, and the webhook receives an event rather than the alert
+row:
 
 ```
 [03:27:03] {"event":"alert.triggered","alertId":6,"symbol":"PETR4",
@@ -515,9 +541,11 @@ escape hatch needed, since the destination is public:
 
 ```bash
 curl http://localhost:3000/quotes/PETR4          # pick a target that will fire
-curl -X POST http://localhost:3000/alerts -H 'content-type: application/json' \
+curl -X POST http://localhost:3000/alerts -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
   -d '{"symbol":"PETR4","direction":"below","targetPrice":999,"webhookUrl":"https://webhook.site/YOUR-ID"}'
-curl http://localhost:3000/alerts                # watch firedAt/lastPrice fill in
+curl http://localhost:3000/alerts -H "authorization: Bearer $TOKEN"          # firedAt fills in
+curl http://localhost:3000/notifications -H "authorization: Bearer $TOKEN"   # and a notification appears
 ```
 
 Pinning the cached price by hand, as in step 4 above, is how you force a re-arm
@@ -550,7 +578,7 @@ you want to change. `.env.example` documents the full set.
 | `ALERTS_LOCK_KEY` | `alerts_poller_lock` | Folded into a bigint for `pg_try_advisory_lock` |
 | `WEBHOOK_TIMEOUT_MS` | `5000` | Per-delivery `AbortSignal.timeout` |
 | `JWT_SECRET` | **none** | Required. The boot throws without it — see below |
-| `JWT_TTL_SECONDS` | `3600` | Token lifetime; there is no revocation, so keep it short |
+| `JWT_TTL_SECONDS` | `3600` | Token lifetime. `POST /auth/logout-all` revokes early |
 | `WEBHOOK_ALLOWED_SCHEMES` | `https` | Accepts `https` or `https:`; comma-separated |
 | `WEBHOOK_ALLOWED_HOSTS` | *(empty)* | When set, **only** these hosts are accepted, and they skip the private-range check |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Dev escape hatch — skips the private/loopback check |
@@ -581,8 +609,8 @@ the one `.env.example` lists) is not read by anything.
 
 ## 🔒 Security posture
 
-Reviewed on this branch. One real finding, two things that are posture rather
-than bugs — worth knowing before exposing this to anything but localhost.
+What to know before exposing this to anything but localhost: one fixed
+finding, one residual risk, and one robustness gap.
 
 ### ✅ Webhook destinations are validated (SSRF, fixed)
 
@@ -618,24 +646,25 @@ validated address with a custom undici dispatcher, which is not implemented.
 
 ### ✅ Authentication and per-user scoping
 
-`/quotes` and the health probes are public. `/watchlist` and `/alerts` sit
+`/quotes`, `/docs` and the health probes are public. Every other route sits
 inside a Fastify plugin that registers the `onRequest` hook from
 `src/plugins/authenticate.ts`, so **a route added inside that scope is protected
-by default** — there is no per-route flag to forget.
+by default** — there is no per-route flag to forget. The same scope adds
+"(Requires Auth)" to each route's summary in Swagger.
 
 The owner never comes from the request body. It is read from the verified token
 by `ownerOf()`, which throws if a route somehow ends up outside the
 authenticated scope, turning a wiring mistake into a loud failure instead of a
 silently undefined owner reaching the SQL. Every HTTP-facing query in
-`repositories/alerts.ts` and `repositories/watchlists.ts` carries
-`WHERE owner_id = $n`, and a miss returns 404 rather than 403 so ids cannot be
-enumerated.
+`src/repositories/` carries `WHERE owner_id = $n` (or `WHERE id = $n` on
+`users`), and a miss returns 404 rather than 403 so ids cannot be enumerated.
 
-The poller's queries — `listActiveAlerts`, `markAlertFired`,
-`markAlertRearmed`, `touchAlerts` — are deliberately **not** scoped: it runs
-in-process with no user in context and has to see every alert. Scoping them by
-mistake would stop every alert from ever firing, and the poller's own `catch`
-would swallow the error.
+The two workers' queries — `listActiveAlerts`, `markAlertFired`,
+`markAlertRearmed`, `touchAlerts`, and `listDigestRecipients`,
+`listDigestWatchlist`, `recordDigestSent` — are deliberately **not** scoped to a
+request: they run in-process with no user in context. Scoping the poller's by
+mistake would stop every alert from ever firing, and its own `catch` would
+swallow the error.
 
 **Revocation.** A signature alone cannot be revoked, which is inherent to
 stateless JWT rather than a bug — but the consequence is real, so it is closed
@@ -681,8 +710,7 @@ from `import.meta.dirname`, never from input.
 ## 📜 Scripts
 
 CI runs `typecheck`, `lint` and `test` on every push and pull request
-(`.github/workflows/ci.yml`). It needs no services — the suite stubs `fetch`,
-Redis and the pg pool — and `yarn install --immutable` fails the run if
+(`.github/workflows/ci.yml`). `yarn install --immutable` fails the run if
 `yarn.lock` was not committed alongside a dependency change.
 
 ```bash
@@ -762,3 +790,11 @@ and the summary schedule can be tested without a database or a market feed.
 Response schemas in `src/routes/` double as Fastify's serializer — **a field
 missing from the schema is silently dropped from the payload**, so adding a
 field to `StockQuote` means adding it in `src/routes/quotes.ts` too.
+
+## 📄 License
+
+Released under the [MIT License](LICENSE). Copyright © 2026 Rian Barbosa.
+
+You can use, copy, modify and distribute this code, including commercially, as
+long as the copyright notice and the license text stay with it. It comes with no
+warranty.
